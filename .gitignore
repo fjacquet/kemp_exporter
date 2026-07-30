@@ -1,0 +1,27 @@
+# Build artifacts
+bin/
+dist/
+coverage.out
+coverage.html
+kemp_exporter
+
+# Logs
+*.log
+
+# Docs site
+site/
+
+# Local secrets
+.env
+*.local.yaml
+.claude.local.md
+.claude/settings.local.json
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# rtk
+.rtk/
