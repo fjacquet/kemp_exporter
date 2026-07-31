@@ -1,12 +1,17 @@
 package kemp
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/sirupsen/logrus"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestPromCollectorRendersSamples checks the full exposition for every sample in
@@ -213,4 +218,101 @@ kemp_virtual_service_bytes_total{system="lm-01"} 12345
 	if err := testutil.CollectAndCompare(NewPromCollector(store), strings.NewReader(want)); err != nil {
 		t.Fatalf("unexpected exposition for a _total metric: %v", err)
 	}
+}
+
+// --- Final review, I5: the duplicate-sample Warn was unbounded ---
+//
+// prometheus.go's own doc comment documents SubVS rows as a NORMAL source of
+// byte-identical labels, and SubVSs are a common LoadMaster configuration. So the
+// drop-and-warn path is steady state on such an appliance, not an exception: 7
+// metrics x N SubVSs x 2 readers, every cycle, forever, into a log file that
+// internal/logging never rotates. The drop itself is correct and stays; the
+// unbounded logging of it does not.
+func TestPromCollectorBoundsDuplicateSampleWarnings(t *testing.T) {
+	hook := logrustest.NewGlobal()
+	defer hook.Reset()
+
+	labels := vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp")
+	store := NewSnapshotStore()
+	store.Store(&Snapshot{
+		BuiltAt: time.Now(),
+		Systems: []*SystemSnapshot{{System: "lm-01", OK: true, Samples: []Sample{
+			{Name: "kemp_virtual_service_up", Labels: labels, Value: 1},
+			{Name: "kemp_virtual_service_up", Labels: labels, Value: 1}, // the SubVS collision
+		}}},
+	})
+
+	reg := prometheus.NewRegistry()
+	c := NewPromCollector(store)
+	if err := reg.Register(c); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	for range 5 { // five scrapes of an appliance in this steady state
+		if _, err := reg.Gather(); err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+	}
+
+	if got := countWarnings(hook, "duplicate label values"); got != 1 {
+		t.Fatalf("%d duplicate-drop Warn lines across 5 scrapes, want exactly 1 "+
+			"(unbounded, this is 7 metrics x N SubVSs x 2 readers every cycle forever)", got)
+	}
+}
+
+func TestOTLPBoundsDuplicateSampleWarnings(t *testing.T) {
+	hook := logrustest.NewGlobal()
+	defer hook.Reset()
+
+	labels := vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp")
+	store := NewSnapshotStore()
+	store.Store(&Snapshot{
+		BuiltAt: time.Now(),
+		Systems: []*SystemSnapshot{{System: "lm-01", OK: true, Samples: []Sample{
+			{Name: "kemp_virtual_service_up", Labels: labels, Value: 1},
+			{Name: "kemp_virtual_service_up", Labels: labels, Value: 1},
+		}}},
+	})
+
+	reader := sdkmetric.NewManualReader()
+	exp := newOTLPExporter(reader, store, "v0.0.0-test")
+	if err := exp.EnsureInstruments(); err != nil {
+		t.Fatalf("EnsureInstruments: %v", err)
+	}
+	for range 5 {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatalf("Collect: %v", err)
+		}
+	}
+
+	if got := countWarnings(hook, "duplicate label values"); got != 1 {
+		t.Fatalf("%d duplicate-drop Warn lines across 5 collections, want exactly 1", got)
+	}
+}
+
+// A DIFFERENT metric name must still get its own line: the bound must suppress
+// repetition, never a new condition.
+func TestDropWarningsAreScopedPerMetricAndSystem(t *testing.T) {
+	hook := logrustest.NewGlobal()
+	defer hook.Reset()
+
+	d := newDropWarnings()
+	for range 3 {
+		d.warn("dup", "kemp_a", "lm-01", logrus.WithField("metric", "kemp_a"), "dropping sample: duplicate label values")
+		d.warn("dup", "kemp_b", "lm-01", logrus.WithField("metric", "kemp_b"), "dropping sample: duplicate label values")
+		d.warn("dup", "kemp_a", "lm-02", logrus.WithField("metric", "kemp_a"), "dropping sample: duplicate label values")
+	}
+	if got := countWarnings(hook, "duplicate label values"); got != 3 {
+		t.Fatalf("%d Warn lines, want 3 (one per metric-name/system pair, repeats suppressed)", got)
+	}
+}
+
+func countWarnings(hook *logrustest.Hook, fragment string) int {
+	n := 0
+	for _, e := range hook.AllEntries() {
+		if e.Level == logrus.WarnLevel && strings.Contains(e.Message, fragment) {
+			n++
+		}
+	}
+	return n
 }

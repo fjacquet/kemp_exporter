@@ -16,11 +16,15 @@ import (
 // Collect does any rendering work, and Collect itself holds no lock at all.
 type PromCollector struct {
 	store *SnapshotStore
+	// warnings bounds the drop Warns below to one per reason/metric/system for the
+	// life of the collector: the SubVS duplicate case is steady state, not an
+	// exception. See dropwarn.go.
+	warnings *dropWarnings
 }
 
 // NewPromCollector wraps the snapshot store as a prometheus.Collector.
 func NewPromCollector(store *SnapshotStore) *PromCollector {
-	return &PromCollector{store: store}
+	return &PromCollector{store: store, warnings: newDropWarnings()}
 }
 
 // Describe sends nothing.
@@ -64,7 +68,9 @@ type nameSchema struct {
 // label-key set, and any later sample whose keys disagree is dropped rather than
 // handed to the registry. The drop is logged at Warn — with the metric name, the
 // system, and both key sets — specifically so the drift is visible in the
-// exporter's own logs instead of just disappearing from the exposition. In normal
+// exporter's own logs instead of just disappearing from the exposition, and
+// bounded to one line per reason/metric/system for the life of the collector (see
+// dropwarn.go: the duplicate case below is steady state, not an exception). In normal
 // operation this path never runs: every derivation in this package builds Labels
 // through the shared builders in metrics.go, which is what keeps a name's key set
 // uniform to begin with. Firing at all means one of those builders was bypassed —
@@ -79,7 +85,10 @@ type nameSchema struct {
 // too — which would fail the whole Gather call, every scrape, until the
 // LoadMaster's config changed. So Collect also tracks, per metric name, the set of
 // label-value tuples already emitted; a later sample whose values repeat an
-// already-emitted tuple is dropped and logged at Warn, the same way key drift is.
+// already-emitted tuple is dropped and logged at Warn, the same way key drift is —
+// and bounded the same way, because on an appliance with SubVSs this is not an
+// anomaly but every cycle, forever. The SubVS metrics lost to this dedup are a
+// documented consequence of the first-wins rule; see docs/metrics.md.
 func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 	snap := p.store.Load()
 	schema := make(map[string]nameSchema)
@@ -102,34 +111,34 @@ func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 				}
 				schema[s.Name] = entry
 			} else if !slices.Equal(entry.keys, keys) {
-				logrus.WithFields(logrus.Fields{
+				p.warnings.warn("keydrift", s.Name, sys.System, logrus.WithFields(logrus.Fields{
 					"metric":   s.Name,
 					"system":   sys.System,
 					"expected": entry.keys,
 					"got":      keys,
-				}).Warn("dropping sample: label keys diverge from earlier samples of the same metric name")
+				}), "dropping sample: label keys diverge from earlier samples of the same metric name")
 				continue
 			}
 
 			sig := strings.Join(vals, "\x00")
 			if _, dup := entry.seen[sig]; dup {
-				logrus.WithFields(logrus.Fields{
+				p.warnings.warn("duplicate", s.Name, sys.System, logrus.WithFields(logrus.Fields{
 					"metric": s.Name,
 					"system": sys.System,
 					"keys":   keys,
 					"vals":   vals,
-				}).Warn("dropping sample: duplicate label values for a metric name already emitted this scrape")
+				}), "dropping sample: duplicate label values for a metric name already emitted this scrape")
 				continue
 			}
 
 			m, err := prometheus.NewConstMetric(entry.desc, prometheus.GaugeValue, s.Value, vals...)
 			if err != nil {
-				logrus.WithFields(logrus.Fields{
+				p.warnings.warn("render", s.Name, sys.System, logrus.WithFields(logrus.Fields{
 					"metric": s.Name,
 					"system": sys.System,
 					"keys":   keys,
 					"vals":   vals,
-				}).WithError(err).Warn("dropping sample: could not render as a metric")
+				}).WithError(err), "dropping sample: could not render as a metric")
 				continue
 			}
 			// Marked only now that the sample is confirmed renderable: marking it

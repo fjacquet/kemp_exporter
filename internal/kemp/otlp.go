@@ -38,6 +38,12 @@ type OTLPExporter struct {
 
 	mu         sync.Mutex
 	registered map[string]struct{}
+
+	// warnings bounds the drop Warns in the callbacks below, on the same terms as
+	// PromCollector's: the duplicate case is steady state on an appliance with
+	// SubVSs, and the callback runs once per collection cycle forever. See
+	// dropwarn.go.
+	warnings *dropWarnings
 }
 
 // NewOTLPExporter creates an exporter pushing to an OTLP gRPC endpoint. The
@@ -76,6 +82,7 @@ func newOTLPExporter(reader sdkmetric.Reader, store *SnapshotStore, serviceVersi
 		meter:      provider.Meter("kemp-exporter"),
 		store:      store,
 		registered: make(map[string]struct{}),
+		warnings:   newDropWarnings(),
 	}
 }
 
@@ -153,21 +160,23 @@ func (e *OTLPExporter) EnsureInstruments() error {
 					if schemaKeys == nil {
 						schemaKeys = keys
 					} else if !slices.Equal(schemaKeys, keys) {
-						logrus.WithFields(logrus.Fields{
-							"metric":   metricName,
-							"expected": schemaKeys,
-							"got":      keys,
-						}).Warn("dropping OTLP sample: label keys diverge from earlier samples of the same metric name")
+						e.warnings.warn("otlp-keydrift", metricName, labelValue(s.Labels, "system"),
+							logrus.WithFields(logrus.Fields{
+								"metric":   metricName,
+								"expected": schemaKeys,
+								"got":      keys,
+							}), "dropping OTLP sample: label keys diverge from earlier samples of the same metric name")
 						continue
 					}
 
 					sig := strings.Join(vals, "\x00")
 					if _, dup := seen[sig]; dup {
-						logrus.WithFields(logrus.Fields{
-							"metric": metricName,
-							"keys":   keys,
-							"vals":   vals,
-						}).Warn("dropping OTLP sample: duplicate label values for a metric name already observed this collection")
+						e.warnings.warn("otlp-duplicate", metricName, labelValue(s.Labels, "system"),
+							logrus.WithFields(logrus.Fields{
+								"metric": metricName,
+								"keys":   keys,
+								"vals":   vals,
+							}), "dropping OTLP sample: duplicate label values for a metric name already observed this collection")
 						continue
 					}
 					seen[sig] = struct{}{}
@@ -188,6 +197,18 @@ func (e *OTLPExporter) EnsureInstruments() error {
 // Shutdown flushes and stops the meter provider.
 func (e *OTLPExporter) Shutdown(ctx context.Context) error {
 	return e.provider.Shutdown(ctx)
+}
+
+// labelValue returns the value of key in labels, or "" when the label is absent.
+// Used to scope a drop warning to one system the way PromCollector's own loop
+// does, without an outer per-system loop the callback does not have.
+func labelValue(labels []Label, key string) string {
+	for _, l := range labels {
+		if l.Key == key {
+			return l.Value
+		}
+	}
+	return ""
 }
 
 // attrsFor converts the sample's labels to OTLP attributes, preserving order.

@@ -22,6 +22,16 @@ for), independent of the wire encoding.
 `kemp_exporter_build_info` carries `system`; the `_status` metrics carry the base
 set for their family plus `status`.
 
+**SubVS rows are dropped, not merged.** A LoadMaster SubVS carries its parent
+virtual service's VIP address and port, so two rows of the stats payload can
+resolve to byte-identical `vsLabels` for one metric name. Both readers keep the
+FIRST such sample and drop the rest — identically, so the two never disagree —
+which means an appliance configured with SubVSs exports its parent service's
+numbers and silently omits the SubVS ones. The drop is logged once per metric name
+per system per process (unbounded logging of a steady-state condition would bury
+everything else), so on such an appliance expect one Warn per affected metric at
+startup and nothing after.
+
 Two data-hygiene rules apply to every row below, both enforced at a single choke
 point rather than per metric:
 
