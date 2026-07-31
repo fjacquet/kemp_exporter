@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fjacquet/kemp_exporter/internal/config"
+	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
 // Detection prefers JSON, so an appliance offering both must land on json.
@@ -584,5 +587,173 @@ func TestClientListVirtualServicesJSON(t *testing.T) {
 	}
 	if got := c.TransportName(); got != "json" {
 		t.Errorf("TransportName() = %q, want json", got)
+	}
+}
+
+// --- Final review, I1: transport detection was check-then-act ---
+//
+// collectSystem issues GetStatistics and ListVirtualServices CONCURRENTLY through
+// one SystemClient, so on the first cycle both callers always find active == nil.
+// ensureTransport used to read active under c.mu, RELEASE the mutex, and only then
+// probe -- so every startup ran two full probes. On a firmware where one command
+// succeeds over JSON while the other 404s (the JSON command names are themselves
+// unconfirmed), the two probes reached opposite conclusions and the LAST WRITER
+// decided the transport for the whole process: 12 json / 8 xml over 20 identical
+// startups when the reviewer measured it. Which wire path and which credential a
+// deployment depends on then changes silently across restarts.
+//
+// Detection happening exactly once is the invariant; the "detected LoadMaster API
+// transport" log line is emitted once per detection, so counting it measures the
+// invariant directly, and the resulting transport must be the same every run.
+func TestClientDetectsTransportOnceUnderConcurrentFirstUse(t *testing.T) {
+	for i := range 20 {
+		hook := logrustest.NewGlobal()
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The two transports share the /access/<cmd> path and differ by
+			// method: JSON posts, XML gets.
+			if r.Method == http.MethodGet {
+				if r.URL.Path == "/access/listvs" {
+					writeBytes(w, fixture(t, "listvs.xml"))
+					return
+				}
+				writeBytes(w, fixture(t, "stats.xml"))
+				return
+			}
+			switch r.URL.Path {
+			case "/access/login":
+				w.Header().Set("Content-Type", "application/json")
+				writeBytes(w, []byte(`{"status":"ok","code":200,"Success":{"Data":{"token":"tok-123"}}}`))
+			case "/access/listvs":
+				// JSON stats works, JSON listvs does not: the exact firmware shape
+				// that made the two concurrent probes disagree.
+				w.WriteHeader(http.StatusNotFound)
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				writeBytes(w, fixture(t, "stats.json"))
+			}
+		}))
+
+		sys := jsonSystem(t, srv)
+		sys.APIKey = "alsoset" // both transports configured, as in production
+		c, err := NewSystemClient(sys, false)
+		if err != nil {
+			srv.Close()
+			t.Fatalf("NewSystemClient: %v", err)
+		}
+
+		// A start barrier, so both callers reach ensureTransport together the way
+		// collectSystem's errgroup fan-out does.
+		var start, done sync.WaitGroup
+		start.Add(1)
+		done.Add(2)
+		for _, call := range []func(){
+			func() { _, _ = c.GetStatistics(context.Background()) },
+			func() { _, _ = c.ListVirtualServices(context.Background()) },
+		} {
+			go func() {
+				defer done.Done()
+				start.Wait()
+				call()
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		var detections int
+		for _, e := range hook.AllEntries() {
+			if strings.Contains(e.Message, "detected LoadMaster API transport") {
+				detections++
+			}
+		}
+		transport := c.TransportName()
+		srv.Close()
+		hook.Reset()
+
+		if detections != 1 {
+			t.Fatalf("run %d: %d transport detections for one client's first cycle, want exactly 1 "+
+				"(a second concurrent probe can reach the opposite conclusion and win by write ordering)", i, detections)
+		}
+		if transport != "xml" {
+			t.Fatalf("run %d: TransportName() = %q, want xml every run "+
+				"(JSON listvs 404s, so the client must end up on XML deterministically)", i, transport)
+		}
+	}
+}
+
+// --- Final review, I3: a config reload discarded the anti-lockout cooldown ---
+//
+// The cooldown exists to stop a rejected credential being retried once per scrape
+// until LoadMaster's 3-5 attempt lockout threshold trips. buildClients constructs
+// brand-new SystemClients on every reload, each starting with a zero authFailureAt,
+// and Watcher.reload fires on ANY qualifying event with no content comparison -- so
+// a content-identical rewrite by a config-management agent, or the shipped systemd
+// unit's `ExecReload=/bin/kill -HUP`, granted one fresh login attempt each time.
+// Repeat that and the account locks, which is precisely what the mechanism exists
+// to prevent.
+//
+// SetClients is the single seam every reload passes through, so the carry-forward
+// lives there: cooldown state moves to the replacement client when the system name
+// AND the credentials are unchanged, and is deliberately dropped when they are not
+// (an operator correcting a password must not wait out a stale window).
+func TestSetClientsCarriesAuthCooldownForUnchangedCredentials(t *testing.T) {
+	var logins int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/access/login" {
+			atomic.AddInt32(&logins, 1)
+			w.WriteHeader(http.StatusUnauthorized)
+			writeBytes(w, []byte(`{"status":"fail","code":401}`))
+			return
+		}
+		writeBytes(w, fixture(t, "stats.json"))
+	}))
+	defer srv.Close()
+
+	sys := jsonSystem(t, srv) // no APIKey: json is the only configured transport
+	old, err := NewSystemClient(sys, false)
+	if err != nil {
+		t.Fatalf("NewSystemClient: %v", err)
+	}
+	if _, err := old.GetStatistics(context.Background()); err == nil {
+		t.Fatal("GetStatistics succeeded against rejected credentials; want error")
+	}
+	if got := atomic.LoadInt32(&logins); got != 1 {
+		t.Fatalf("logins before the reload = %d, want 1", got)
+	}
+
+	loop := NewCollectionLoop([]Client{old}, config.Collection{
+		Interval: time.Hour, Timeout: time.Second, MaxConcurrent: 1,
+	}, NewSnapshotStore())
+
+	// Reload 1: same config, so the same credentials. The rebuilt client must
+	// inherit the cooldown and make no network call at all.
+	same, err := NewSystemClient(sys, false)
+	if err != nil {
+		t.Fatalf("NewSystemClient (reload): %v", err)
+	}
+	loop.SetClients([]Client{same})
+	if _, err := same.GetStatistics(context.Background()); err == nil {
+		t.Fatal("GetStatistics on the rebuilt client succeeded; want the cached cooldown error")
+	}
+	if got := atomic.LoadInt32(&logins); got != 1 {
+		t.Fatalf("logins after a credentials-unchanged reload = %d, want 1 "+
+			"(the reload handed the appliance another login attempt, defeating the lockout guard)", got)
+	}
+
+	// Reload 2: the operator corrected the password. The cooldown must NOT carry,
+	// or a fixed credential would sit unused for a full window.
+	fixed := sys
+	fixed.Password = "corrected"
+	next, err := NewSystemClient(fixed, false)
+	if err != nil {
+		t.Fatalf("NewSystemClient (corrected): %v", err)
+	}
+	loop.SetClients([]Client{next})
+	if _, err := next.GetStatistics(context.Background()); err == nil {
+		t.Fatal("GetStatistics succeeded against rejected credentials; want error")
+	}
+	if got := atomic.LoadInt32(&logins); got != 2 {
+		t.Errorf("logins after a credentials-CHANGED reload = %d, want 2 "+
+			"(a corrected credential must be tried immediately)", got)
 	}
 }

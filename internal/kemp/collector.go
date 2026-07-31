@@ -32,10 +32,17 @@ func NewCollectionLoop(clients []Client, cc config.Collection, store *SnapshotSt
 // is executing concurrently: the mutex only ever guards the pointer/slice header
 // itself, and a cycle already in flight has already taken its own private copy
 // via snapshotClients, so a swap here can only affect the NEXT cycle to start.
+//
+// This is also where the anti-lockout cooldown survives a reload: every reload
+// path in the process passes through this one call, so carrying the state here
+// (rather than in main's reload handler) means no future caller can rebuild a
+// client set and silently hand a rejected credential another login attempt. See
+// carryAuthCooldown for what is and is not carried.
 func (l *CollectionLoop) SetClients(clients []Client) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	carryAuthCooldown(l.clients, clients)
 	l.clients = clients
-	l.mu.Unlock()
 }
 
 // snapshotClients returns a private copy of the current target set, in config

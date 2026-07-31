@@ -2,8 +2,10 @@ package kemp
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -60,6 +62,12 @@ const authFailureCooldown = 60 * time.Second
 type SystemClient struct {
 	name string
 
+	// credFingerprint identifies the endpoint-and-credential set this client was
+	// built from, so a reload can tell "same target, same credentials, rebuilt
+	// object" from "the operator changed something". It is a hash, never the
+	// material itself, and is never logged or rendered: see credentialFingerprint.
+	credFingerprint [sha256.Size]byte
+
 	mu       sync.Mutex
 	active   transport
 	xml      *xmlTransport
@@ -77,9 +85,85 @@ type SystemClient struct {
 	now func() time.Time
 }
 
+// credentialFingerprint hashes everything that decides which credential is sent
+// where, so two clients can be compared for "same target, same secrets" without
+// either the comparison or any diagnostic ever holding the secrets themselves.
+//
+// Each field is length-prefixed before hashing so no pair of different field
+// splits can produce the same input (a "ab"+"c" vs "a"+"bc" collision would make
+// a credential change look like no change, which is the one error that matters
+// here). The digest is never logged, exported, or included in an error: its only
+// consumer is the equality test in carryAuthCooldown.
+func credentialFingerprint(sys config.System) [sha256.Size]byte {
+	h := sha256.New()
+	for _, field := range []string{
+		sys.Host,
+		strconv.Itoa(sys.Port),
+		sys.APIKey,
+		sys.Username,
+		sys.Password,
+		strconv.FormatBool(sys.InsecureSkipVerify.Value()),
+	} {
+		_, _ = fmt.Fprintf(h, "%d:%s", len(field), field)
+	}
+	var out [sha256.Size]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+// carryAuthCooldown moves the anti-lockout cooldown state from a superseded client
+// set onto its replacements, for every system whose name AND credentials are
+// unchanged.
+//
+// Without this a config reload defeated the cooldown entirely: buildClients
+// constructs brand-new SystemClients, each with a zero authFailureAt, and
+// config.Watcher.reload fires on any qualifying filesystem event with no content
+// comparison -- so a content-identical rewrite by a config-management agent, or the
+// shipped systemd unit's ExecReload=kill -HUP, bought the appliance one more login
+// attempt with a credential already known to be rejected. Repeat that against a
+// LoadMaster with lockout enabled and the account locks, which is the exact outcome
+// authFailureCooldown exists to prevent.
+//
+// The cooldown is deliberately NOT carried when the credentials changed: an
+// operator who has just corrected a password must not have to wait out a window
+// recorded against the old one. It is also not carried across a rename, because
+// the system name is how a target is identified everywhere else in this exporter.
+func carryAuthCooldown(previous, next []Client) {
+	if len(previous) == 0 || len(next) == 0 {
+		return
+	}
+	prior := make(map[string]*SystemClient, len(previous))
+	for _, c := range previous {
+		if sc, ok := c.(*SystemClient); ok {
+			prior[sc.name] = sc
+		}
+	}
+	for _, c := range next {
+		sc, ok := c.(*SystemClient)
+		if !ok {
+			continue
+		}
+		old, found := prior[sc.name]
+		if !found || old == sc || old.credFingerprint != sc.credFingerprint {
+			continue
+		}
+		old.mu.Lock()
+		at, cause := old.authFailureAt, old.authFailureErr
+		old.mu.Unlock()
+		if at.IsZero() {
+			continue
+		}
+		sc.mu.Lock()
+		sc.authFailureAt, sc.authFailureErr = at, cause
+		sc.mu.Unlock()
+		logrus.WithFields(logrus.Fields{"system": sc.name, "cooldown": authFailureCooldown.String()}).
+			Info("reload: carrying the credential-rejection cooldown forward; credentials unchanged")
+	}
+}
+
 // NewSystemClient builds both transports; detection happens on first use.
 func NewSystemClient(sys config.System, trace bool) (*SystemClient, error) {
-	c := &SystemClient{name: sys.Name, now: time.Now}
+	c := &SystemClient{name: sys.Name, now: time.Now, credFingerprint: credentialFingerprint(sys)}
 	if sys.APIKey != "" {
 		xt, err := newXMLTransport(sys, trace)
 		if err != nil {
@@ -197,14 +281,26 @@ func (c *SystemClient) noteAuthResult(err error) {
 
 // ensureTransport selects a transport, preferring JSON. It returns a nil transport
 // when the probe itself already produced the caller's result.
+//
+// c.mu is held across the whole probe, network round trip included, rather than
+// released after the active == nil check. That check-then-act shape was not a rare
+// interleaving: collectSystem fans GetStatistics and ListVirtualServices out
+// CONCURRENTLY through one client, so on the first cycle BOTH callers always found
+// active == nil and both probed. Two probes can reach opposite conclusions -- JSON
+// `stats` succeeding while the (unconfirmed) JSON `listvs` command name 404s is
+// enough -- and the last writer then decided the transport, the credential, and the
+// wire path for the entire process lifetime, differently across restarts.
+//
+// The cost of serialising is a bounded wait for the peers, once per client per
+// process, and it is already bounded twice over: by the probe's own context and by
+// the 30s client timeout. Detection happens once; nothing here is on the steady-state
+// path, which takes the mutex only for the active != nil read below.
 func (c *SystemClient) ensureTransport(ctx context.Context, cmd string, params map[string]string, out any) (transport, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.active != nil {
-		tr := c.active
-		c.mu.Unlock()
-		return tr, nil
+		return c.active, nil
 	}
-	c.mu.Unlock()
 
 	// probeErr carries the JSON probe's classified failure (errUnsupported or
 	// errAuth) through to the final error if no fallback transport is configured, so
@@ -213,9 +309,7 @@ func (c *SystemClient) ensureTransport(ctx context.Context, cmd string, params m
 	if c.json != nil {
 		err := c.json.Do(ctx, cmd, params, out)
 		if err == nil {
-			c.mu.Lock()
 			c.active = c.json
-			c.mu.Unlock()
 			logrus.WithFields(logrus.Fields{"system": c.name, "transport": "json"}).
 				Info("detected LoadMaster API transport")
 			return nil, nil
@@ -227,9 +321,7 @@ func (c *SystemClient) ensureTransport(ctx context.Context, cmd string, params m
 		probeErr = err
 	}
 	if c.xml != nil {
-		c.mu.Lock()
 		c.active = c.xml
-		c.mu.Unlock()
 		logrus.WithFields(logrus.Fields{"system": c.name, "transport": "xml"}).
 			Info("detected LoadMaster API transport")
 		return c.xml, nil
@@ -274,15 +366,20 @@ func (c *SystemClient) reprobe(ctx context.Context, cmd string, params map[strin
 	logrus.WithFields(logrus.Fields{"system": c.name, "transport": alt.Name()}).
 		WithError(cause).Warn("transport failed; re-probing the alternate path once")
 	if err := alt.Do(ctx, cmd, params, out); err != nil {
-		// The transport that will keep serving requests going forward is still the
-		// (unchanged) active one, so cause -- not the alternate's err -- is what the
-		// cooldown must be keyed on. cause is always non-errAuth here (do() already
-		// intercepted and handled an errAuth active-transport failure before ever
-		// calling reprobe), so today this call can only ever clear a stale cooldown,
-		// never wrongly prime a new one from a credential that isn't even in use --
-		// which is exactly the point: an errAuth belonging to the alternate must
-		// never suppress calls to the transport actually in use.
-		c.noteAuthResult(cause)
+		// The cooldown is deliberately left untouched here. There used to be a
+		// c.noteAuthResult(cause) call on this line, described as "can only ever
+		// clear a stale cooldown" -- it could not: cause is non-nil (this is the
+		// failure path) and non-errAuth (do() intercepts an errAuth active-transport
+		// failure before ever calling reprobe), and noteAuthResult acts on exactly
+		// those two cases and no other. It was a no-op with a comment that
+		// misdescribed a lockout-prevention mechanism, resting on an invariant no
+		// compiler or test enforced. What matters is the rule itself, which the
+		// absence of a call states as plainly as the call did: neither the active
+		// transport's non-auth failure nor the ALTERNATE's failure -- whatever its
+		// kind -- may prime or clear the cooldown, because an errAuth belonging to a
+		// transport that is not, and does not become, active must never suppress
+		// calls to the transport actually in use.
+		//
 		// The RETURNED error, by contrast, preserves both failures: discarding the
 		// alternate's error here (as an earlier version of this function did) would
 		// lose the operator's diagnosis of which transport/credential is actually
