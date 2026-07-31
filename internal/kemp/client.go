@@ -147,14 +147,10 @@ func (c *SystemClient) do(ctx context.Context, cmd string, params map[string]str
 		c.noteAuthResult(err)
 		return err
 	}
-	err = c.reprobe(ctx, cmd, params, out, err)
-	// reprobe's outcome is itself subject to the same cooldown bookkeeping as any
-	// other attempt: a nil result clears a stale cooldown, and an error that turns
-	// out to be the alternate transport's own credential rejection must still prime
-	// it -- see reprobe's doc comment for why that error is preserved rather than
-	// discarded.
-	c.noteAuthResult(err)
-	return err
+	// reprobe handles its own cooldown bookkeeping (see its doc comment): the
+	// cooldown must reflect only the transport that will actually serve the next
+	// call, which reprobe -- not do -- is in a position to know.
+	return c.reprobe(ctx, cmd, params, out, err)
 }
 
 // cooldownError reports a cached credential rejection as a fresh error, without
@@ -245,6 +241,17 @@ func (c *SystemClient) ensureTransport(ctx context.Context, cmd string, params m
 }
 
 // reprobe switches to the other transport once after a hard failure, then gives up.
+//
+// It owns its own cooldown bookkeeping rather than leaving it to the caller,
+// because only reprobe knows, at the point an attempt completes, which transport
+// will actually serve the *next* call: cause (the active transport's own failure)
+// when the alternate also fails and active is left unchanged, or nothing at all
+// (the alternate just proved itself healthy) when the alternate succeeds and
+// active swaps to it. The alternate's own error is never fed to noteAuthResult: a
+// transport that is not, and does not become, active has no bearing on whether the
+// transport actually in use should be throttled. See the caller-facing error
+// below for why the alternate's failure is still surfaced, just not to the
+// cooldown.
 func (c *SystemClient) reprobe(ctx context.Context, cmd string, params map[string]string, out any, cause error) error {
 	c.mu.Lock()
 	if c.reprobed {
@@ -266,20 +273,26 @@ func (c *SystemClient) reprobe(ctx context.Context, cmd string, params map[strin
 	logrus.WithFields(logrus.Fields{"system": c.name, "transport": alt.Name()}).
 		WithError(cause).Warn("transport failed; re-probing the alternate path once")
 	if err := alt.Do(ctx, cmd, params, out); err != nil {
-		// Preserve both failures. Discarding the alternate's error (as an earlier
-		// version of this function did) loses two things at once: the operator's
-		// diagnosis of which transport/credential is actually broken (the log would
-		// say only "XML returned 500" with no trace of "and your JSON password is
-		// also wrong"), and the errors.Is(err, errAuth) signal do() needs to prime
-		// the cooldown for a credential that reprobe just confirmed rejected --
-		// without it, that credential is re-attempted every single cycle, exactly
-		// the harm authFailureCooldown exists to prevent, reached through this
-		// fallback path instead of detection's.
+		// The transport that will keep serving requests going forward is still the
+		// (unchanged) active one, so cause -- not the alternate's err -- is what the
+		// cooldown must be keyed on. cause is always non-errAuth here (do() already
+		// intercepted and handled an errAuth active-transport failure before ever
+		// calling reprobe), so today this call can only ever clear a stale cooldown,
+		// never wrongly prime a new one from a credential that isn't even in use --
+		// which is exactly the point: an errAuth belonging to the alternate must
+		// never suppress calls to the transport actually in use.
+		c.noteAuthResult(cause)
+		// The RETURNED error, by contrast, preserves both failures: discarding the
+		// alternate's error here (as an earlier version of this function did) would
+		// lose the operator's diagnosis of which transport/credential is actually
+		// broken -- the log would say only "XML returned 500" with no trace of "and
+		// your JSON password is also wrong."
 		return fmt.Errorf("%w (alternate %s also failed: %w)", cause, alt.Name(), err)
 	}
 	c.mu.Lock()
 	c.active = alt
 	c.mu.Unlock()
+	c.noteAuthResult(nil)
 	return nil
 }
 

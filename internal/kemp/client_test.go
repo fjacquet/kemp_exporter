@@ -296,7 +296,7 @@ func TestSystemClientConcurrentGetStatistics(t *testing.T) {
 // exact scenario: XML is active, XML starts failing with an unrelated error, and
 // JSON -- the alternate reprobe falls back to -- is also rejected on credentials.
 func TestClientReprobeFallsBackOnceAndPreservesBothFailures(t *testing.T) {
-	var loginCalls int32
+	var loginCalls, xmlCalls int32
 	var xmlFailing, jsonRejects atomic.Bool
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -313,6 +313,7 @@ func TestClientReprobeFallsBackOnceAndPreservesBothFailures(t *testing.T) {
 		}
 		if r.Method == http.MethodGet {
 			// XML path.
+			atomic.AddInt32(&xmlCalls, 1)
 			if xmlFailing.Load() {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
@@ -366,24 +367,135 @@ func TestClientReprobeFallsBackOnceAndPreservesBothFailures(t *testing.T) {
 		t.Fatalf("loginCalls after the triggered reprobe = %d, want 2 (detection + one reprobe attempt)", got)
 	}
 
-	// The JSON rejection reprobe just confirmed must prime the cooldown: a further
-	// call must make no new network attempt at all while inside the cooldown window.
-	if _, err := c.GetStatistics(context.Background()); err == nil {
-		t.Fatal("GetStatistics succeeded during the auth-failure cooldown; want the cached error")
-	}
-	if got := atomic.LoadInt32(&loginCalls); got != 2 {
-		t.Errorf("loginCalls after a call inside the cooldown window = %d, want 2 (no new attempt)", got)
-	}
-
-	// Past the cooldown, XML is retried (still failing) and reprobe fires again --
-	// but the reprobed latch bounds the alternate attempt to exactly once ever: no
-	// second login call.
-	fakeNow = fakeNow.Add(authFailureCooldown + time.Second)
+	// This scenario's cause (XML's plain 500) is not itself a credential rejection,
+	// so it must NOT prime any cooldown (see the N1 fix: only a rejection of the
+	// transport that will actually serve future calls does that -- JSON's
+	// rejection here is irrelevant, since JSON is not, and never becomes, active).
+	// A further call must therefore still reach XML over the network -- proven by
+	// xmlCalls incrementing, not just by loginCalls staying flat, since the
+	// reprobed latch alone (a separate, permanent-for-this-client's-lifetime
+	// mechanism) would keep loginCalls flat even if a cooldown were also
+	// (wrongly) blocking every call outright.
+	// Uses "strictly more than before", not "+1", because a failing 500 is itself
+	// retried internally by resty's client (newRestyClient's SetRetryCount(3)) --
+	// each logical GetStatistics call that fails can generate several real HTTP
+	// requests to XML. What matters here is only that at least one new request
+	// happened at all, proving no cooldown silently swallowed the whole call.
+	xmlCallsBeforeRetry := atomic.LoadInt32(&xmlCalls)
 	if _, err := c.GetStatistics(context.Background()); err == nil {
 		t.Fatal("GetStatistics succeeded despite XML still failing; want error")
 	}
+	if got := atomic.LoadInt32(&xmlCalls); got <= xmlCallsBeforeRetry {
+		t.Errorf("xmlCalls = %d, want more than %d -- XML must still be retried over the network (no cooldown applies to a non-auth cause)", got, xmlCallsBeforeRetry)
+	}
 	if got := atomic.LoadInt32(&loginCalls); got != 2 {
-		t.Errorf("loginCalls after cooldown elapsed and XML failed again = %d, want 2 (reprobed latch prevents a second alternate attempt)", got)
+		t.Errorf("loginCalls after a second XML failure = %d, want 2 -- the reprobed latch, not a cooldown, is what prevents a second alternate attempt", got)
+	}
+
+	// The reprobed latch bounds the alternate attempt to exactly once for this
+	// client's entire lifetime, not just for some cooldown window: even much later,
+	// XML is still retried (network calls continue) but JSON is never attempted
+	// again.
+	fakeNow = fakeNow.Add(authFailureCooldown + time.Second)
+	xmlCallsBeforeRetry = atomic.LoadInt32(&xmlCalls)
+	if _, err := c.GetStatistics(context.Background()); err == nil {
+		t.Fatal("GetStatistics succeeded despite XML still failing; want error")
+	}
+	if got := atomic.LoadInt32(&xmlCalls); got <= xmlCallsBeforeRetry {
+		t.Errorf("xmlCalls = %d, want more than %d -- XML must still be retried after time passes", got, xmlCallsBeforeRetry)
+	}
+	if got := atomic.LoadInt32(&loginCalls); got != 2 {
+		t.Errorf("loginCalls after time passed and XML failed again = %d, want 2 (reprobed latch prevents a second alternate attempt, independent of any cooldown)", got)
+	}
+}
+
+// TestClientReprobeAlternateRejectionDoesNotCooldownActiveTransport is the N1
+// regression test. A JSON alternate transport's credential rejection, discovered
+// only because XML (the active, still-in-use transport) transiently failed and
+// triggered a reprobe, must never suppress subsequent calls to XML itself: XML has
+// no credential problem at all, and JSON is not -- and never becomes -- the
+// transport in use. Before the fix, noteAuthResult saw the combined reprobe error
+// (which still satisfies errors.Is(err, errAuth) because of JSON's rejection) and
+// primed a 60s cooldown blocking every call regardless of transport, so if XML's
+// failure was merely transient and it recovered on the very next cycle, the
+// exporter would still return a cached rejection instead of actually retrying it.
+func TestClientReprobeAlternateRejectionDoesNotCooldownActiveTransport(t *testing.T) {
+	var loginCalls, xmlCalls int32
+	var xmlFailing, jsonRejects atomic.Bool
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/access/login" {
+			atomic.AddInt32(&loginCalls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			if jsonRejects.Load() {
+				w.WriteHeader(http.StatusUnauthorized)
+				writeBytes(w, []byte(`{"status":"fail","code":401}`))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound) // unsupported at detection time
+			return
+		}
+		if r.Method == http.MethodGet {
+			atomic.AddInt32(&xmlCalls, 1)
+			if xmlFailing.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			writeBytes(w, fixture(t, "stats.xml"))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	sys := systemFor(t, srv) // APIKey set
+	sys.Username, sys.Password = "bal", "secret"
+	c, err := NewSystemClient(sys, false)
+	if err != nil {
+		t.Fatalf("NewSystemClient: %v", err)
+	}
+	fakeNow := time.Now()
+	c.now = func() time.Time { return fakeNow }
+
+	// Detection: JSON login 404s (unsupported), falls back to XML.
+	if _, err := c.GetStatistics(context.Background()); err != nil {
+		t.Fatalf("initial detection GetStatistics: %v", err)
+	}
+	if got := c.TransportName(); got != "xml" {
+		t.Fatalf("TransportName() = %q after detection, want xml", got)
+	}
+
+	// XML fails once (transiently) and JSON, the reprobe alternate, is rejected on
+	// credentials -- exactly the scenario that used to prime a global cooldown.
+	xmlFailing.Store(true)
+	jsonRejects.Store(true)
+	if _, err := c.GetStatistics(context.Background()); err == nil {
+		t.Fatal("GetStatistics succeeded despite XML failing; want error")
+	}
+	if got := c.TransportName(); got != "xml" {
+		t.Fatalf("TransportName() = %q after the failed reprobe, want xml", got)
+	}
+	xmlCallsAfterFailure := atomic.LoadInt32(&xmlCalls)
+
+	// XML's failure clears on the very next cycle -- it was transient. This call
+	// happens immediately afterward (the fake clock is not advanced at all), well
+	// inside what would have been the 60s cooldown window if one had been (wrongly)
+	// primed by JSON's rejection.
+	xmlFailing.Store(false)
+	st, err := c.GetStatistics(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatistics after XML recovered: %v -- an errAuth from the unused JSON alternate must not suppress calls to the still-active XML transport", err)
+	}
+	if len(st.VirtualServices) != 2 {
+		t.Errorf("len(VirtualServices) = %d, want 2 from the recovered XML transport", len(st.VirtualServices))
+	}
+	// "Strictly more than after the failure", not an exact count: a failing 500 is
+	// itself retried internally by resty (SetRetryCount(3)), so the exact number of
+	// real HTTP requests per logical call varies. What matters is that the recovery
+	// call demonstrably reached the network at all, rather than being served a
+	// cached rejection without ever trying XML again.
+	if got := atomic.LoadInt32(&xmlCalls); got <= xmlCallsAfterFailure {
+		t.Errorf("xmlCalls = %d, want more than %d -- proves XML was actually retried over the network, not served from a cached rejection", got, xmlCallsAfterFailure)
 	}
 }
 
