@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -127,32 +128,80 @@ func TestOTLPCarriesLabelsAsAttributes(t *testing.T) {
 	}
 }
 
+// countingMeter wraps a real metric.Meter to count Float64ObservableGauge calls.
+// Inspecting collected metricdata cannot distinguish a guarded EnsureInstruments
+// from an unguarded one: mutation-testing (see task-13-report.md) found the OTel
+// SDK itself collapses duplicate-definition instrument registrations into one
+// correct data point with no visible signal in the exported metrics or in otel's
+// global error handler. Counting actual calls into the SDK is the only way to
+// observe what EnsureInstruments' dedup guard is actually for: bounding the number
+// of redundant instrument + callback registrations that would otherwise
+// accumulate, once per already-known name per cycle, over the life of a
+// long-running process. Embedding the real metric.Meter satisfies its unexported
+// embedded.Meter requirement, so this is a plain assignable field swap
+// (exp.meter = &countingMeter{Meter: exp.meter}) from otlp_test.go, which is
+// package kemp — no change to otlp.go's design was needed for this seam.
+type countingMeter struct {
+	metric.Meter
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingMeter) Float64ObservableGauge(name string, opts ...metric.Float64ObservableGaugeOption) (metric.Float64ObservableGauge, error) {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	return c.Meter.Float64ObservableGauge(name, opts...)
+}
+
+func (c *countingMeter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
 // EnsureInstruments runs after every cycle, so it must be idempotent.
 //
-// Mutation-tested caveat, recorded here rather than silently: removing the
-// dedup guard in EnsureInstruments does NOT make this test fail. The OTel SDK
-// tolerates re-registering an identical name/kind/unit/description gauge
-// without erroring, and because every duplicate registration's callback reads
-// the same store and observes the same attribute set, the SDK's
-// last-value-per-attribute-set gauge aggregation collapses the repeats into
-// exactly one data point regardless of how many times the instrument was
-// created — confirmed by instrumenting the callback and otel's global error
-// handler during mutation testing (see task-13-report.md). So this test (and
-// TestOTLPEnsureInstrumentsConcurrentSafe below) verify that the *exported
-// data* stays correct under repeated calls, not that the guard itself ran —
-// the guard's actual purpose (preventing an unbounded number of redundant
-// Float64ObservableGauge registrations from accumulating over the life of a
-// long-running process, one per name per cycle) has no black-box signal
-// reachable from outside this package to assert on directly.
+// Mutation-tested caveat, recorded here rather than silently: inspecting
+// collected metricdata alone cannot detect a missing dedup guard. The OTel SDK
+// tolerates re-registering an identical name/kind/unit/description gauge without
+// erroring, and because every duplicate registration's callback reads the same
+// store and observes the same attribute set, the SDK's last-value-per-attribute-
+// set gauge aggregation collapses the repeats into exactly one data point
+// regardless of how many times the instrument was created — confirmed by
+// instrumenting the callback and otel's global error handler during mutation
+// testing (see task-13-report.md). The count==1 assertion on collected data below
+// verifies exported data stays correct under repeated calls, but on its own
+// cannot tell a guarded EnsureInstruments from an unguarded one.
+//
+// The countingMeter assertion below closes that gap: it counts actual calls into
+// e.meter.Float64ObservableGauge, which is the only place the guard's real effect
+// (bounding registrations to one per distinct name, not one per call) is
+// observable at all. Confirmed load-bearing by temporarily removing the dedup
+// check in EnsureInstruments and re-running this test: it failed with
+// "Float64ObservableGauge called 3 times ... want 1" (one distinct name,
+// kemp_up, re-registered once per call) — see task-13-report.md's addendum.
 func TestOTLPEnsureInstrumentsIdempotent(t *testing.T) {
 	store := seededStore()
 	reader := sdkmetric.NewManualReader()
 	exp := newOTLPExporter(reader, store, "v0.0.0-test")
+	counter := &countingMeter{Meter: exp.meter}
+	exp.meter = counter
+
 	for i := 0; i < 3; i++ {
 		if err := exp.EnsureInstruments(); err != nil {
 			t.Fatalf("EnsureInstruments #%d: %v", i, err)
 		}
 	}
+
+	// seededStore holds exactly 3 distinct metric names (kemp_up, kemp_tps,
+	// kemp_virtual_service_active_connections); the store never changes across
+	// these 3 calls, so a correctly-guarded EnsureInstruments registers each
+	// exactly once — not once per call.
+	if got := counter.count(); got != 3 {
+		t.Errorf("Float64ObservableGauge called %d times across 3 EnsureInstruments calls on an unchanged 3-name store, want 3 (one per distinct name, not per call)", got)
+	}
+
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -351,20 +400,122 @@ func TestOTLPMetricAbsentAfterDisappearingFromSnapshot(t *testing.T) {
 	}
 }
 
+// PromCollector keeps the FIRST sample of a colliding label-value tuple and drops
+// the second, logging a Warn (prometheus.go's nameSchema.seen, added in 229bc22
+// for exactly this case: a SubVS row carries its parent virtual service's VIP
+// address and port, so two st.VirtualServices entries produce byte-identical
+// vsLabels). Both export paths read the same immutable snapshot, so the OTLP path
+// must make the identical choice — not silently keep whichever sample the
+// last-value-wins gauge aggregation happens to observe last within one collection.
+func TestOTLPDropsDuplicateLabelValues(t *testing.T) {
+	store := NewSnapshotStore()
+	dupLabels := vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp")
+	store.Store(&Snapshot{Systems: []*SystemSnapshot{{
+		System: "lm-01",
+		Samples: []Sample{
+			{
+				Name:   "kemp_virtual_service_active_connections",
+				Labels: dupLabels,
+				Value:  10,
+			},
+			{
+				// Same name, same label keys AND values (e.g. a SubVS row resolving
+				// to the same parent VIP) — a duplicate series, not a schema drift.
+				Name:   "kemp_virtual_service_active_connections",
+				Labels: vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp"),
+				Value:  99,
+			},
+		},
+	}}})
+
+	got := collectOTLP(t, store)
+	dp := singleGauge(t, got, "kemp_virtual_service_active_connections")
+	if dp.Value != 10 {
+		t.Errorf("kemp_virtual_service_active_connections value = %v, want 10 (the first-seen sample — PromCollector keeps the same one for this exact scenario, see TestPromCollectorDropsDuplicateLabelValues)", dp.Value)
+	}
+}
+
+// The divergent-KEY case: two samples of the same name whose label sets don't even
+// share the same keys. PromCollector drops the second and keeps the first's
+// schema (TestPromCollectorDropsLabelKeyDrift); OTLP must make the same choice
+// rather than exporting both as independent attribute sets, so an operator sees
+// the identical drift signal — and the identical surviving series — through
+// either export path.
+func TestOTLPDropsLabelKeyDrift(t *testing.T) {
+	store := NewSnapshotStore()
+	store.Store(&Snapshot{Systems: []*SystemSnapshot{{
+		System: "lm-01",
+		Samples: []Sample{
+			{Name: "kemp_thing", Labels: []Label{{Key: "system", Value: "lm-01"}}, Value: 1},
+			{Name: "kemp_thing", Labels: []Label{{Key: "other", Value: "x"}}, Value: 2},
+		},
+	}}})
+
+	got := collectOTLP(t, store)
+	dp := singleGauge(t, got, "kemp_thing")
+	if dp.Value != 1 {
+		t.Errorf("kemp_thing value = %v, want 1 (the first-seen schema survives)", dp.Value)
+	}
+	if n := dp.Attributes.Len(); n != 1 {
+		t.Errorf("kemp_thing has %d attributes, want 1 (the first-seen schema's [system])", n)
+	}
+	if v, ok := dp.Attributes.Value(attribute.Key("system")); !ok || v.AsString() != "lm-01" {
+		t.Errorf("kemp_thing attributes = %v, want system=lm-01 (the first-seen schema's labels)", dp.Attributes.ToSlice())
+	}
+}
+
+// The brief's one explicit warning ("do not drop the resource attributes") had no
+// test. This matters concretely, not hypothetically: the brief's own draft used
+// semconv/v1.26.0, but otel/sdk@v1.44.0's resource.Default() is itself built
+// against semconv/v1.41.0 (sdk/resource/builtin.go), so pairing NewWithAttributes
+// with a mismatched schema URL makes resource.Merge return ErrSchemaURLConflict —
+// which newOTLPExporter's `res, _ := resource.Merge(...)` silently discards,
+// degrading to a schemaless resource with zero signal. Pin the service identity
+// attributes directly so a future semconv bump that drifts from sdk/resource's own
+// pinned version fails a test instead of silently degrading telemetry.
+func TestOTLPResourceCarriesServiceIdentity(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	exp := newOTLPExporter(reader, seededStore(), "v1.2.3-test")
+	if err := exp.EnsureInstruments(); err != nil {
+		t.Fatalf("EnsureInstruments: %v", err)
+	}
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if rm.Resource == nil {
+		t.Fatal("ResourceMetrics.Resource is nil; resource.Merge silently failed")
+	}
+	set := rm.Resource.Set()
+	if v, ok := set.Value(attribute.Key("service.name")); !ok || v.AsString() != "kemp-exporter" {
+		t.Errorf("service.name = %v/%v, want kemp-exporter", v.AsString(), ok)
+	}
+	if v, ok := set.Value(attribute.Key("service.version")); !ok || v.AsString() != "v1.2.3-test" {
+		t.Errorf("service.version = %v/%v, want v1.2.3-test", v.AsString(), ok)
+	}
+}
+
 // EnsureInstruments is called by the collection loop after every cycle and could in
-// principle race with a concurrent OTLP Collect from the periodic reader's own
-// goroutine. Drive many goroutines calling EnsureInstruments (against a store also
-// being written concurrently) at once, under -race, so a missing mutex around the
-// registered-names map would be caught rather than passing by luck on a
-// single-goroutine call sequence. Confirmed by mutation-testing: removing e.mu's
+// principle race with a concurrent call from another goroutine (e.g. a config
+// reload triggering an out-of-cycle call while the loop's own call is still
+// in flight). Drive many goroutines calling EnsureInstruments (against a store
+// also being written concurrently) at once, under -race, so a missing mutex
+// around the registered-names map would be caught rather than passing by luck on
+// a single-goroutine call sequence. This test does NOT exercise Collect running
+// concurrently with EnsureInstruments — Collect below runs only after wg.Wait(),
+// once every goroutine above has finished — so it proves EnsureInstruments'
+// internal concurrency safety only, not the reader-driven Collect path; no
+// claim beyond that is made here. Confirmed by mutation-testing: removing e.mu's
 // Lock/Unlock around the map access makes `go test -race` report a genuine data
-// race here (concurrent map read/write) — this is the property this test actually
-// proves; see TestOTLPEnsureInstrumentsIdempotent's comment for what the final
-// count==1 assertion below does and does not prove.
+// race here (concurrent map read/write) — this is the property this test
+// actually proves; see TestOTLPEnsureInstrumentsIdempotent's comment for what
+// the count-based assertions below do and do not prove.
 func TestOTLPEnsureInstrumentsConcurrentSafe(t *testing.T) {
 	store := seededStore()
 	reader := sdkmetric.NewManualReader()
 	exp := newOTLPExporter(reader, store, "v0.0.0-test")
+	counter := &countingMeter{Meter: exp.meter}
+	exp.meter = counter
 
 	const goroutines = 8
 	const iterations = 50
@@ -380,7 +531,7 @@ func TestOTLPEnsureInstrumentsConcurrentSafe(t *testing.T) {
 				}
 			}
 		}()
-		go func(id int) {
+		go func() {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
 				store.Store(&Snapshot{Systems: []*SystemSnapshot{{
@@ -388,10 +539,21 @@ func TestOTLPEnsureInstrumentsConcurrentSafe(t *testing.T) {
 					Samples: []Sample{upSample("lm-01", true)},
 				}}})
 			}
-			_ = id
-		}(i)
+		}()
 	}
 	wg.Wait()
+
+	// The universe of metric names any EnsureInstruments call can ever see in this
+	// test is fixed at 3 (seededStore's kemp_up, kemp_tps, and
+	// kemp_virtual_service_active_connections — the concurrent writers above only
+	// ever overwrite the store with a strict subset, {kemp_up}), so a correctly
+	// guarded exporter registers at most 3 instruments in total regardless of how
+	// the goroutines above are scheduled — deterministic, not a race-dependent
+	// exact count. Without the guard, this would scale with total EnsureInstruments
+	// calls (goroutines*iterations = 400 here), not with distinct names.
+	if got := counter.count(); got > 3 {
+		t.Errorf("Float64ObservableGauge called %d times under concurrent EnsureInstruments calls, want <= 3 (bounded by the distinct metric names ever seen, not by call count)", got)
+	}
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {

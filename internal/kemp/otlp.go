@@ -2,9 +2,12 @@ package kemp
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/fjacquet/kemp_exporter/internal/config"
+	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
@@ -17,7 +20,17 @@ import (
 // The reader (a PeriodicReader in production, a ManualReader in tests) drives
 // collection: on each cycle every registered instrument's callback reads the
 // latest snapshot and observes its samples. Both export paths therefore render
-// from the same immutable snapshot and cannot disagree.
+// from the same immutable snapshot and cannot disagree — including on which
+// sample survives when the snapshot itself is anomalous. A LoadMaster SubVS row
+// carries its parent virtual service's VIP address and port, so two distinct
+// derivations can resolve to byte-identical labels for one metric name
+// (prometheus.go's PromCollector.Collect doc comment describes this concretely).
+// PromCollector keeps the first such sample and drops the rest, logging a Warn;
+// each callback below applies the identical first-wins, log-on-drop rule over the
+// identical iteration order (Snapshot.SamplesByName preserves Systems/Samples
+// order), so the two export paths pick the same surviving sample rather than an
+// OTLP-only deployment silently keeping whichever duplicate its gauge aggregation
+// happens to observe last within one collection.
 type OTLPExporter struct {
 	provider *sdkmetric.MeterProvider
 	meter    metric.Meter
@@ -114,7 +127,49 @@ func (e *OTLPExporter) EnsureInstruments() error {
 				// e.store.Load() here (rather than closing over snap above) is
 				// what makes this instrument pull-based rather than a one-shot
 				// capture of the first cycle's data.
+				//
+				// schemaKeys and seen replicate PromCollector.Collect's per-name
+				// nameSchema guard (prometheus.go), scoped to this one metric name's
+				// callback instead of a map keyed by name — one callback already IS
+				// one name here, so no outer map is needed. The first sample this
+				// invocation observes fixes the label-key schema; a later sample
+				// with different keys, or with the same keys AND values as one
+				// already observed this cycle, is dropped and logged rather than
+				// exported — matching prometheus.go's drop-and-warn choice exactly,
+				// over the same iteration order, so both export paths keep the same
+				// surviving sample for one snapshot.
+				var schemaKeys []string
+				seen := make(map[string]struct{})
 				for _, s := range e.store.Load().SamplesByName(metricName) {
+					keys := make([]string, len(s.Labels))
+					vals := make([]string, len(s.Labels))
+					for i, l := range s.Labels {
+						keys[i] = l.Key
+						vals[i] = l.Value
+					}
+
+					if schemaKeys == nil {
+						schemaKeys = keys
+					} else if !slices.Equal(schemaKeys, keys) {
+						logrus.WithFields(logrus.Fields{
+							"metric":   metricName,
+							"expected": schemaKeys,
+							"got":      keys,
+						}).Warn("dropping OTLP sample: label keys diverge from earlier samples of the same metric name")
+						continue
+					}
+
+					sig := strings.Join(vals, "\x00")
+					if _, dup := seen[sig]; dup {
+						logrus.WithFields(logrus.Fields{
+							"metric": metricName,
+							"keys":   keys,
+							"vals":   vals,
+						}).Warn("dropping OTLP sample: duplicate label values for a metric name already observed this collection")
+						continue
+					}
+					seen[sig] = struct{}{}
+
 					obs.Observe(s.Value, metric.WithAttributes(attrsFor(s.Labels)...))
 				}
 				return nil
