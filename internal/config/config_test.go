@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,6 +112,87 @@ func TestLoadRejectsEmptySystems(t *testing.T) {
 	path := writeConfig(t, "systems: []\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("Load succeeded with no systems; want error")
+	}
+}
+
+// A negative Collection.Interval reaches time.NewTicker in the collection loop's
+// Run, which panics on a non-positive duration -- a bad config value must fail
+// loudly here, at load time with a message naming the field, not take the
+// process down in a background goroutine after it has been up for a cycle.
+func TestLoadRejectsNegativeInterval(t *testing.T) {
+	path := writeConfig(t, `
+collection:
+  interval: "-1s"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a negative collection.interval; want error")
+	}
+	if !strings.Contains(err.Error(), "interval") || !strings.Contains(err.Error(), "-1s") {
+		t.Errorf("error = %q, want it to name the field (interval) and the offending value (-1s)", err.Error())
+	}
+}
+
+func TestLoadRejectsNegativeTimeout(t *testing.T) {
+	path := writeConfig(t, `
+collection:
+  timeout: "-1s"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a negative collection.timeout; want error")
+	}
+	if !strings.Contains(err.Error(), "timeout") || !strings.Contains(err.Error(), "-1s") {
+		t.Errorf("error = %q, want it to name the field (timeout) and the offending value (-1s)", err.Error())
+	}
+}
+
+// A negative MaxConcurrent is rejected at the config layer entirely: errgroup's
+// own "negative means unlimited" convention is not exposed as a config knob (see
+// the collection loop's own clamp for why silently honoring it there would be
+// worse, not better). A directly-constructed config.Collection{} can still hit
+// that clamp; a value loaded from YAML cannot.
+func TestLoadRejectsNegativeMaxConcurrent(t *testing.T) {
+	path := writeConfig(t, `
+collection:
+  maxConcurrent: -1
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a negative collection.maxConcurrent; want error")
+	}
+	if !strings.Contains(err.Error(), "maxConcurrent") || !strings.Contains(err.Error(), "-1") {
+		t.Errorf("error = %q, want it to name the field (maxConcurrent) and the offending value (-1)", err.Error())
+	}
+}
+
+func TestLoadRejectsNegativeOTelInterval(t *testing.T) {
+	path := writeConfig(t, `
+otel:
+  interval: "-1s"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a negative otel.interval; want error")
+	}
+	if !strings.Contains(err.Error(), "interval") || !strings.Contains(err.Error(), "-1s") {
+		t.Errorf("error = %q, want it to name the field (interval) and the offending value (-1s)", err.Error())
 	}
 }
 

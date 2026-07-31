@@ -160,17 +160,41 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.URI == "" {
 		cfg.Server.URI = "/metrics"
 	}
+	// A negative value here would otherwise reach time.NewTicker (Collection.Interval,
+	// in the collection loop's Run) or bypass the ==0 defaulting below entirely
+	// (Collection.Timeout, Collection.MaxConcurrent, OTel.Interval) and flow through
+	// as-is. time.NewTicker panics on a non-positive duration, which would take the
+	// whole process down from a background goroutine, potentially a full cycle
+	// after startup rather than failing loudly here with a message naming the field.
+	if cfg.Collection.Interval < 0 {
+		return nil, fmt.Errorf("collection.interval: must not be negative, got %s", cfg.Collection.Interval)
+	}
 	if cfg.Collection.Interval == 0 {
 		cfg.Collection.Interval = 60 * time.Second
 	}
+	if cfg.Collection.Timeout < 0 {
+		return nil, fmt.Errorf("collection.timeout: must not be negative, got %s", cfg.Collection.Timeout)
+	}
 	if cfg.Collection.Timeout == 0 {
 		cfg.Collection.Timeout = 60 * time.Second
+	}
+	// Rejected outright rather than treated as errgroup's own "negative means
+	// unlimited" convention: that convention is not exposed as a config knob, so an
+	// operator writing maxConcurrent: -1 gets a clear load-time error instead of
+	// silently full serial collection (see the collection loop's own clamp, which
+	// exists only for a directly-constructed config.Collection{} that skipped this
+	// validation).
+	if cfg.Collection.MaxConcurrent < 0 {
+		return nil, fmt.Errorf("collection.maxConcurrent: must not be negative, got %d", cfg.Collection.MaxConcurrent)
 	}
 	if cfg.Collection.MaxConcurrent == 0 {
 		cfg.Collection.MaxConcurrent = 4
 	}
 	if cfg.OTel.Endpoint == "" {
 		cfg.OTel.Endpoint = "localhost:4317"
+	}
+	if cfg.OTel.Interval < 0 {
+		return nil, fmt.Errorf("otel.interval: must not be negative, got %s", cfg.OTel.Interval)
 	}
 	if cfg.OTel.Interval == 0 {
 		cfg.OTel.Interval = 10 * time.Second

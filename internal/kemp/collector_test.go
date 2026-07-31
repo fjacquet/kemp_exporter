@@ -278,17 +278,23 @@ func TestCollectOnceTimeoutTruncatesHungTarget(t *testing.T) {
 // Timeout bounds a SINGLE target's own work, starting when that target's own
 // collection begins -- not one deadline shared across the whole cycle and
 // anchored at CollectOnce's start. With MaxConcurrent=1, "second" cannot even
-// start until "first" (100ms of work) finishes, so a shared-deadline
-// implementation with Timeout=150ms would leave "second" only ~50ms of its own
-// 100ms of work before the (already 100ms-consumed) deadline fired, and would
+// start until "first" (300ms of work) finishes, so a shared-deadline
+// implementation with Timeout=450ms would leave "second" only ~150ms of its own
+// 300ms of work before the (already 300ms-consumed) deadline fired, and would
 // wrongly report it down. A correct per-target budget gives EACH target its own
-// full 150ms starting when it begins, so both finish comfortably inside their
-// own budget despite the pair needing ~200ms serialized end to end.
+// full 450ms starting when it begins, so both finish comfortably inside their
+// own budget despite the pair needing ~600ms serialized end to end.
+//
+// The 300ms/450ms pair (rather than a tighter 100ms/150ms) is deliberate
+// margin against scheduling jitter and -race overhead on a loaded CI runner:
+// this test is load-bearing for the per-target-vs-shared-timeout fix, so it
+// must not be the one that goes flaky. The ratio (work : budget = 2:3) is what
+// preserves the discrimination, not the absolute numbers.
 func TestCollectOnceTimeoutIsPerTargetNotSharedAcrossCycle(t *testing.T) {
-	first := &MockClient{SystemName: "first", Stats: decodeStats(t, "stats.xml"), VSInfo: decodeVSInfo(t, "listvs.xml"), StatsDelay: 100 * time.Millisecond}
-	second := &MockClient{SystemName: "second", Stats: decodeStats(t, "stats.xml"), VSInfo: decodeVSInfo(t, "listvs.xml"), StatsDelay: 100 * time.Millisecond}
+	first := &MockClient{SystemName: "first", Stats: decodeStats(t, "stats.xml"), VSInfo: decodeVSInfo(t, "listvs.xml"), StatsDelay: 300 * time.Millisecond}
+	second := &MockClient{SystemName: "second", Stats: decodeStats(t, "stats.xml"), VSInfo: decodeVSInfo(t, "listvs.xml"), StatsDelay: 300 * time.Millisecond}
 
-	cc := config.Collection{Interval: time.Second, Timeout: 150 * time.Millisecond, MaxConcurrent: 1}
+	cc := config.Collection{Interval: time.Second, Timeout: 450 * time.Millisecond, MaxConcurrent: 1}
 	loop := NewCollectionLoop([]Client{first, second}, cc, NewSnapshotStore())
 
 	snap := loop.CollectOnce(context.Background())
@@ -297,7 +303,7 @@ func TestCollectOnceTimeoutIsPerTargetNotSharedAcrossCycle(t *testing.T) {
 	}
 	for _, sys := range snap.Systems {
 		if !sys.OK {
-			t.Errorf("system %s OK = false (err=%q); a per-target timeout budget should have covered its 100ms of work", sys.System, sys.Err)
+			t.Errorf("system %s OK = false (err=%q); a per-target timeout budget should have covered its 300ms of work", sys.System, sys.Err)
 		}
 	}
 }

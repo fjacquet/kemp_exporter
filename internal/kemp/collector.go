@@ -91,10 +91,20 @@ func (l *CollectionLoop) CollectOnce(ctx context.Context) *Snapshot {
 
 	limit := l.cc.MaxConcurrent
 	if limit <= 0 {
-		// A misconfigured or zero-value config.Collection must not silently wedge
-		// collection forever: errgroup.(*Group).SetLimit(0) blocks every future Go
-		// call permanently, which would hang every future cycle rather than just
-		// degrading it.
+		// config.Load rejects a negative Collection.MaxConcurrent and defaults a
+		// zero one to 4, so a value loaded from YAML never reaches this branch;
+		// it is the last line of defence for a directly-constructed
+		// config.Collection{} (tests, or a future caller that builds one without
+		// going through config.Load). The one thing this clamp defends against is
+		// errgroup.(*Group).SetLimit(0): that call blocks every future Go
+		// permanently, wedging collection forever rather than just degrading it,
+		// so 0 must never reach SetLimit unclamped. A negative value is
+		// errgroup's own "no limit" convention, but honoring that silently here
+		// would swap one surprise (a config mistake) for another (full
+		// serialization nobody asked for), so it is clamped the same as 0 and
+		// logged rather than passed through.
+		logrus.WithField("configured_max_concurrent", l.cc.MaxConcurrent).
+			Warn("collection.maxConcurrent must be positive; forcing serial collection (1) rather than errgroup's negative-means-unlimited convention")
 		limit = 1
 	}
 
