@@ -1,6 +1,7 @@
 package kemp
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"testing"
@@ -8,6 +9,12 @@ import (
 	"github.com/fjacquet/kemp_exporter/internal/config"
 	"gopkg.in/yaml.v2"
 )
+
+// configSystem aliases config.System so test helpers read less noisily.
+type configSystem = config.System
+
+// isUnsupported reports whether err was classified as an unsupported transport.
+func isUnsupported(err error) bool { return errors.Is(err, errUnsupported) }
 
 // writeBytes writes to an io.Writer. Taking the interface rather than the concrete
 // http.ResponseWriter keeps the write off the rule that flags unchecked

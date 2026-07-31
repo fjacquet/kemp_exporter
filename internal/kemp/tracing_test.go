@@ -58,6 +58,49 @@ func TestTracingDoesNotLeakAPIKey(t *testing.T) {
 	}
 }
 
+// TestJSONLoginResponseTokenNotLogged exercises the JSON transport's login flow
+// end to end with trace=true and asserts the session token never appears in any
+// logged field. installTracing's auth-path body suppression (isAuthPath, matched
+// against the redacted request path) is the only thing standing between the
+// login response body -- which carries the token in Success.Data.token -- and
+// the trace log. This complements Task 5's isAuthPath fragment check by proving
+// the JSON transport's actual login path ("/access/login") is covered by it, not
+// just asserting the fragment list contains "login" in the abstract.
+func TestJSONLoginResponseTokenNotLogged(t *testing.T) {
+	srv, _, _ := jsonServer(t, fixture(t, "stats.json"), false)
+	defer srv.Close()
+
+	prevLevel := logrus.GetLevel()
+	logrus.SetLevel(logrus.DebugLevel)
+	defer logrus.SetLevel(prevLevel)
+	hook := logrustest.NewGlobal()
+
+	tr, err := newJSONTransport(jsonSystem(t, srv), true) // trace=true: installTracing wired up
+	if err != nil {
+		t.Fatalf("newJSONTransport: %v", err)
+	}
+	var st models.Statistics
+	if err := tr.Do(context.Background(), "stats", nil, &st); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+
+	const token = "tok-123" // the token jsonServer's login handler returns
+	if len(hook.AllEntries()) == 0 {
+		t.Fatal("expected at least one trace log entry")
+	}
+	for _, e := range hook.AllEntries() {
+		for field, v := range e.Data {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			if strings.Contains(s, token) {
+				t.Fatalf("log field %q leaked the session token: %s", field, s)
+			}
+		}
+	}
+}
+
 // TestRedactQueryFailsClosedOnParseError asserts redactQuery reports failure
 // (rather than silently returning "") when its input does not parse as a URL.
 // installTracing's isAuthPath check runs on redactQuery's output; a redactQuery
