@@ -58,8 +58,8 @@ internal/kemp
                               layer above both transports
   metrics.go                  label-key constructors — the only place a []Label is
                                built (ADR 0006)
-  snapshot.go / collector.go   background collection loop -> immutable Snapshot in
-                               an atomic.Pointer (ADR 0002)
+  snapshot.go / collector.go   background collection loop -> immutable Snapshot
+                               behind an RWMutex-guarded pointer swap (ADR 0002)
   prometheus.go                PromCollector: Snapshot -> Prometheus registry gather
   otlp.go                      OTLPExporter: Snapshot -> OTLP observable gauges via
                                a PeriodicReader (production) / ManualReader (tests)

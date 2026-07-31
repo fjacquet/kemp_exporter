@@ -31,7 +31,8 @@ slowed down by a LoadMaster round-trip.
 
 `CollectionLoop.Run` ticks on `cfg.Collection.Interval`, queries every configured
 system (bounded by `maxConcurrent`), derives samples, and atomically stores the
-result in a `SnapshotStore` (an `atomic.Pointer` to an immutable `Snapshot`). Both
+result in a `SnapshotStore` (an `RWMutex`-guarded pointer to an immutable
+`Snapshot`; the lock protects only the pointer swap, never a collection). Both
 the Prometheus `PromCollector.Collect` and each OTLP observable-gauge callback call
 `store.Load()` and render from whatever snapshot is currently there — never
 triggering a collection themselves, never blocking on one in progress.
