@@ -59,7 +59,6 @@ const authFailureCooldown = 60 * time.Second
 // SystemClient talks to one LoadMaster over whichever transport it supports.
 type SystemClient struct {
 	name string
-	sys  config.System
 
 	mu       sync.Mutex
 	active   transport
@@ -80,7 +79,7 @@ type SystemClient struct {
 
 // NewSystemClient builds both transports; detection happens on first use.
 func NewSystemClient(sys config.System, trace bool) (*SystemClient, error) {
-	c := &SystemClient{name: sys.Name, sys: sys, now: time.Now}
+	c := &SystemClient{name: sys.Name, now: time.Now}
 	if sys.APIKey != "" {
 		xt, err := newXMLTransport(sys, trace)
 		if err != nil {
@@ -148,7 +147,14 @@ func (c *SystemClient) do(ctx context.Context, cmd string, params map[string]str
 		c.noteAuthResult(err)
 		return err
 	}
-	return c.reprobe(ctx, cmd, params, out, err)
+	err = c.reprobe(ctx, cmd, params, out, err)
+	// reprobe's outcome is itself subject to the same cooldown bookkeeping as any
+	// other attempt: a nil result clears a stale cooldown, and an error that turns
+	// out to be the alternate transport's own credential rejection must still prime
+	// it -- see reprobe's doc comment for why that error is preserved rather than
+	// discarded.
+	c.noteAuthResult(err)
+	return err
 }
 
 // cooldownError reports a cached credential rejection as a fresh error, without
@@ -260,12 +266,20 @@ func (c *SystemClient) reprobe(ctx context.Context, cmd string, params map[strin
 	logrus.WithFields(logrus.Fields{"system": c.name, "transport": alt.Name()}).
 		WithError(cause).Warn("transport failed; re-probing the alternate path once")
 	if err := alt.Do(ctx, cmd, params, out); err != nil {
-		return cause // report the original failure, not the fallback's
+		// Preserve both failures. Discarding the alternate's error (as an earlier
+		// version of this function did) loses two things at once: the operator's
+		// diagnosis of which transport/credential is actually broken (the log would
+		// say only "XML returned 500" with no trace of "and your JSON password is
+		// also wrong"), and the errors.Is(err, errAuth) signal do() needs to prime
+		// the cooldown for a credential that reprobe just confirmed rejected --
+		// without it, that credential is re-attempted every single cycle, exactly
+		// the harm authFailureCooldown exists to prevent, reached through this
+		// fallback path instead of detection's.
+		return fmt.Errorf("%w (alternate %s also failed: %w)", cause, alt.Name(), err)
 	}
 	c.mu.Lock()
 	c.active = alt
 	c.mu.Unlock()
-	c.noteAuthResult(nil)
 	return nil
 }
 
