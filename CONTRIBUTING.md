@@ -86,8 +86,10 @@ responses, and no inline lint/semgrep suppressions.
 
 ## Semgrep Gate
 
-The CI pipeline runs Semgrep for security checks (`make security`, advisory —
-never blocking; the vulnerability and lint gates in `make ci` are what blocks).
+The CI pipeline runs Semgrep for security checks (`make security`), and
+`make ci` runs it too — it is a BLOCKING gate: the target no longer ends in
+`|| true`, and a finding fails the build. Note the scope: Semgrep's default
+ignore rules skip `*_test.go`, so this gates production code only.
 This project policy prohibits inline suppressions (`//nolint` for the linter,
 `// nosemgrep` for Semgrep). If a finding is a false positive, address it in the
 project-level `.golangci.yml` or Semgrep config rather than suppressing inline.

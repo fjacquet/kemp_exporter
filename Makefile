@@ -80,8 +80,17 @@ sbom:
 	mkdir -p $(DIST)
 	go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest mod -json -output $(DIST)/sbom.cdx.json
 
-security:  # advisory: reports findings but never blocks the build (CodeQL/osv are the blocking gates)
-	uvx semgrep scan --config auto --skip-unknown-extensions || true
+# BLOCKING gate, and part of `make ci`. It used to end in `|| true`, which meant
+# it could never fail, while `ci` did not run it at all -- advisory twice over.
+# Findings are fixed by restructuring the code: inline suppressions (// nosemgrep,
+# //nolint, //#nosec) are forbidden family-wide and the Definition of Done greps
+# for them.
+#
+# Scope note: semgrep's default ignore rules skip *_test.go entirely, so this gates
+# PRODUCTION code only. Test files remain ungated here (golangci-lint excludes them
+# too) -- a known, accepted gap, not something this target covers.
+security:
+	uvx semgrep scan --config auto --skip-unknown-extensions
 
 docs:
 	uvx --with mkdocs-material --with pymdown-extensions mkdocs build --strict --site-dir site
@@ -101,8 +110,8 @@ release-snapshot: tools-sbom
 # Local convenience gate.
 sure: fmt-check vet test build
 
-# Aggregate gate run by CI: lint + test + build + vuln.
-ci: lint test build vuln
+# Aggregate gate run by CI: lint + test + build + vuln + semgrep.
+ci: lint test build vuln security
 
 # --- demo stacks ---
 

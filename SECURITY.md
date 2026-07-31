@@ -86,8 +86,9 @@ LoadMaster and performs no write operations against the appliance.
 
 Release artifacts (`make release-snapshot` / GoReleaser) include a CycloneDX
 SBOM per release, generated locally and independently reproducible. CI runs
-`govulncheck` and `golangci-lint` on every push/PR, and Semgrep advisory
-scanning is wired via `make security`. See
+`govulncheck` and `golangci-lint` on every push/PR, and Semgrep scanning is wired
+via `make security`, which `make ci` runs as a blocking gate (production code
+only — Semgrep's defaults skip `*_test.go`). See
 [ADR 0001](docs/adr/0001-supply-chain-and-release-hardening.md) for exactly
 what this repository enforces directly versus what it inherits from the shared
 `fjacquet/ci` workflows.

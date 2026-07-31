@@ -22,7 +22,7 @@ make test              # go test ./...
 make test-race          # race detector + coverage
 make lint              # golangci-lint run
 make vuln              # govulncheck
-make ci                # lint + test + build + vuln — the CI gate, run this before committing
+make ci                # lint + test + build + vuln + semgrep — the CI gate, run this before committing
 make sure              # fmt-check + vet + test + build — local convenience gate
 make docker            # build the container image
 make demo              # docker compose up --build (exporter + Prometheus + Grafana)
@@ -126,7 +126,7 @@ entry in `internal/dashboards/dashboards_test.go`'s `knownMetrics` map.
 shared `fjacquet/ci` reusable workflows, pinned to the `@v1` tag (a deliberate
 first-party trade-off — see
 `docs/adr/0001-supply-chain-and-release-hardening.md`). The Makefile is the
-portable contract: `make ci` (lint + test-race + build + govulncheck) is what CI
+portable contract: `make ci` (lint + test-race + build + govulncheck + semgrep) is what CI
 actually runs; `make sbom`/`make security`/`make docs` back the SBOM, Semgrep, and
 docs-site jobs respectively. Releases are GoReleaser-driven (`.goreleaser.yaml`):
 cross-compiled binaries, checksums, a CycloneDX SBOM per release, a multi-arch GHCR
