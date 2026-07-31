@@ -24,8 +24,9 @@ import (
 // This test alone only proves the handler behaves correctly given an empty
 // store; it never actually starts the server and the collection loop together,
 // so it cannot fail merely because someone reordered run() to collect before
-// serving. TestServerAcceptsRequestsWhileFirstCollectionInFlight below is the
-// test that actually proves the ordering.
+// serving. TestServingStartsBeforeFirstCollectionCompletes below is the test
+// that actually proves that ordering, by calling startServing itself -- the
+// exact function run() calls.
 func TestMetricsHandlerServesBeforeFirstCollection(t *testing.T) {
 	store := kemp.NewSnapshotStore()
 	reg := prometheus.NewRegistry()
@@ -49,14 +50,24 @@ func TestMetricsHandlerServesBeforeFirstCollection(t *testing.T) {
 	}
 }
 
-// TestServerAcceptsRequestsWhileFirstCollectionInFlight is the direct proof of
-// requirement 1: the server and the collection loop are started in exactly the
-// order run() uses (startServer, then go loop.Run), against a client whose
-// first GetStatistics call is deliberately slow. A real GET to /metrics must
-// complete -- and the store must still hold the pre-collection empty snapshot
-// -- while that first collection is provably still in flight. Reordering
-// main.go to collect synchronously before serving would make this test time
-// out or see a populated snapshot too early; it cannot pass by accident.
+// TestServerAcceptsRequestsWhileFirstCollectionInFlight proves that
+// startServer really does bind and start serving before returning (so a real
+// GET can land while a slow collection is still in flight), and that
+// startServer composed with CollectionLoop.Run in this order behaves
+// correctly.
+//
+// CORRECTION (post-review): this test builds its own mux and calls
+// startServer and go loop.Run directly -- it does NOT call run() or
+// startServing, so on its own it does NOT regression-guard main.go's actual
+// startup ordering. A previous version of this comment claimed reordering
+// main.go "would make this test time out... it cannot pass by accident" --
+// that was false: this test never exercises main.go's ordering code at all,
+// so no change to run() or startServing can make it fail. Verified
+// concretely: reviewer-suggested regression (replacing startServing's `go
+// loop.Run(ctx)` with `store.Store(loop.CollectOnce(ctx))` run synchronously
+// before startServer) leaves this test green.
+// TestServingStartsBeforeFirstCollectionCompletes below is the test that
+// actually guards that ordering, because it calls startServing itself.
 func TestServerAcceptsRequestsWhileFirstCollectionInFlight(t *testing.T) {
 	store := kemp.NewSnapshotStore()
 	reg := prometheus.NewRegistry()
@@ -110,6 +121,71 @@ func TestServerAcceptsRequestsWhileFirstCollectionInFlight(t *testing.T) {
 
 	// Confirm the collection actually completes afterward, so the assertion
 	// above isn't vacuously true because the delay never mattered.
+	deadline := time.Now().Add(2 * time.Second)
+	for store.Load().BuiltAt.IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("first collection never completed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestServingStartsBeforeFirstCollectionCompletes is the actual regression
+// guard for requirement 1: it calls startServing itself -- the single
+// function run() calls to build the mux, bind the server, and start the
+// collection loop -- rather than a hand-assembled replica of its steps. A
+// slow first collection (via MockClient.StatsDelay) must not block a real GET
+// against the mux startServing built, and the store must still hold the
+// pre-collection empty snapshot at the moment that GET returns.
+//
+// This also exercises the mux wiring itself (cfg.Server.URI routed to
+// metricsHandler), which the hand-built-mux version of this test above did
+// not cover.
+func TestServingStartsBeforeFirstCollectionCompletes(t *testing.T) {
+	store := kemp.NewSnapshotStore()
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(kemp.NewPromCollector(store)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := reg.Register(kemp.NewBuildInfoCollector("v0.0.0-test", "go1.26.5")); err != nil {
+		t.Fatalf("Register build info: %v", err)
+	}
+
+	slow := &kemp.MockClient{
+		SystemName: "lm-01",
+		Stats:      &models.Statistics{},
+		StatsDelay: 300 * time.Millisecond,
+	}
+	loop := kemp.NewCollectionLoop([]kemp.Client{slow}, config.Collection{
+		Interval:      time.Hour,
+		Timeout:       2 * time.Second,
+		MaxConcurrent: 1,
+	}, store)
+
+	cfg := &config.Config{Server: config.Server{Host: "127.0.0.1", Port: "0", URI: "/metrics"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv, ln, err := startServing(ctx, cfg, reg, store, loop)
+	if err != nil {
+		t.Fatalf("startServing: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics while collection in flight: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	if !store.Load().BuiltAt.IsZero() {
+		t.Fatal("store already updated before the GET returned: startServing is not serving before collection completes")
+	}
+
 	deadline := time.Now().Add(2 * time.Second)
 	for store.Load().BuiltAt.IsZero() {
 		if time.Now().After(deadline) {
@@ -269,5 +345,11 @@ systems:
 	}
 	if exitErr.ExitCode() == 0 {
 		t.Fatalf("exit code = 0, want non-zero; output=%s", out)
+	}
+	// Pins the failure to the collection path specifically: a non-zero exit
+	// from, say, a config parse error would satisfy the two assertions above
+	// just as well, without ever exercising runOnce's failure branch at all.
+	if !strings.Contains(string(out), "collection failed for 1 of 1 system(s)") {
+		t.Fatalf("exit was non-zero but not for the expected reason; output=%s", out)
 	}
 }

@@ -178,6 +178,49 @@ systems:
 	}
 }
 
+// Two plausible-looking server.uri values reach the mux with no defense at
+// all today: "metrics" (no leading slash) panics http.ServeMux's pattern
+// parser at startup ("host/path missing /"), and "/" collides with the "/"
+// landing-page pattern ("conflicts with pattern"). Every other misconfigured
+// field in this file fails loudly here, at load time, naming the field --
+// these two instead produce a stack trace from deep inside net/http. Load
+// must reject both the same way.
+func TestLoadRejectsURIWithoutLeadingSlash(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  uri: "metrics"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with server.uri lacking a leading slash; want error")
+	}
+	if !strings.Contains(err.Error(), "uri") {
+		t.Errorf("error = %q, want it to name the field (uri)", err.Error())
+	}
+}
+
+func TestLoadRejectsRootURI(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  uri: "/"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with server.uri set to \"/\" (collides with the landing page); want error")
+	}
+	if !strings.Contains(err.Error(), "uri") {
+		t.Errorf("error = %q, want it to name the field (uri)", err.Error())
+	}
+}
+
 func TestLoadRejectsNegativeOTelInterval(t *testing.T) {
 	path := writeConfig(t, `
 otel:

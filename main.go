@@ -152,6 +152,43 @@ func startServer(addr string, handler http.Handler) (*http.Server, net.Listener,
 	return srv, ln, nil
 }
 
+// startServing builds the metrics/health/index mux from cfg, reg and store,
+// binds and starts the HTTP server, and only THEN starts the collection
+// loop's Run goroutine.
+//
+// This exact ordering -- server bound and accepting connections before the
+// loop's first collection cycle can even begin -- IS requirement 1's entire
+// implementation, and this function is the single seam through which both
+// run() and this file's own tests exercise it. A regression that reordered
+// these two steps (e.g. `store.Store(loop.CollectOnce(ctx))` run synchronously
+// above the startServer call, before ever starting the loop's Run goroutine)
+// would only be caught by a test that calls startServing itself -- see
+// TestServingStartsBeforeFirstCollectionCompletes in main_test.go, which does
+// exactly that, rather than a test that merely replicates these steps
+// independently.
+func startServing(ctx context.Context, cfg *config.Config, reg *prometheus.Registry, store *kemp.SnapshotStore, loop *kemp.CollectionLoop) (*http.Server, net.Listener, error) {
+	mux := http.NewServeMux()
+	mux.Handle(cfg.Server.URI, metricsHandler(reg))
+	// Health tolerates two missed cycles before reporting stale.
+	mux.Handle("/health", healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout))
+	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
+
+	addr := cfg.Server.Host + ":" + cfg.Server.Port
+
+	// Serve BEFORE the first collection: login plus a first poll can outlast the
+	// collection timeout, and blocking startup on it would stall /metrics behind
+	// an unreachable appliance.
+	srv, ln, err := startServer(addr, mux)
+	if err != nil {
+		return nil, nil, err
+	}
+	logrus.WithField("addr", ln.Addr().String()).Info("serving metrics")
+
+	go loop.Run(ctx)
+
+	return srv, ln, nil
+}
+
 // shutdownTelemetry flushes OTLP if it was constructed.
 //
 // otlp is deliberately typed *kemp.OTLPExporter here, not telemetry.Shutdowner:
@@ -232,22 +269,13 @@ func run(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("register build info: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle(cfg.Server.URI, metricsHandler(reg))
-	// Health tolerates two missed cycles before reporting stale.
-	mux.Handle("/health", healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout))
-	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
-
-	addr := cfg.Server.Host + ":" + cfg.Server.Port
-
-	// Serve BEFORE the first collection: login plus a first poll can outlast the
-	// collection timeout, and blocking startup on it would stall /metrics behind
-	// an unreachable appliance.
-	srv, ln, err := startServer(addr, mux)
+	// startServing owns the "server before first collection" ordering: it
+	// builds the mux, binds and starts the HTTP server, and only then starts
+	// the collection loop's Run goroutine. See its doc comment.
+	srv, _, err := startServing(ctx, cfg, reg, store, loop)
 	if err != nil {
 		return fmt.Errorf("start http server: %w", err)
 	}
-	logrus.WithField("addr", ln.Addr().String()).Info("serving metrics")
 
 	var otlp *kemp.OTLPExporter
 	if cfg.OTel.Enabled {
@@ -258,10 +286,18 @@ func run(_ *cobra.Command, _ []string) error {
 		logrus.WithField("endpoint", cfg.OTel.Endpoint).Info("OTLP export enabled")
 	}
 
-	go loop.Run(ctx)
-
 	// Register OTLP instruments as new metric names appear in the snapshot.
 	if otlp != nil {
+		// Registered once immediately, not just on the ticker below: the
+		// ticker's first tick is a full cfg.Collection.Interval away (60s by
+		// default), while loop.Run already published its first snapshot back
+		// in startServing. Without this, every OTLP export in that window
+		// (cfg.OTel.Interval, 10s by default -- so roughly the first six
+		// export cycles) would push zero kemp metrics despite the data
+		// already sitting in the store.
+		if err := otlp.EnsureInstruments(); err != nil {
+			logrus.WithError(err).Warn("OTLP instrument registration failed")
+		}
 		go func() {
 			t := time.NewTicker(cfg.Collection.Interval)
 			defer t.Stop()

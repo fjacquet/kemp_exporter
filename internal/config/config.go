@@ -160,6 +160,17 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.URI == "" {
 		cfg.Server.URI = "/metrics"
 	}
+	// http.ServeMux itself would catch both of these -- but only as a panic at
+	// server-start time, deep inside net/http's pattern parser, with no mention
+	// of which config field caused it. Every other misconfiguration in this file
+	// fails loudly here instead, naming the field; server.uri gets the same
+	// treatment.
+	if !strings.HasPrefix(cfg.Server.URI, "/") {
+		return nil, fmt.Errorf("server.uri: must start with '/', got %q", cfg.Server.URI)
+	}
+	if cfg.Server.URI == "/" {
+		return nil, fmt.Errorf(`server.uri: must not be exactly "/" (it would collide with the landing page)`)
+	}
 	// A negative value here would otherwise reach time.NewTicker (Collection.Interval,
 	// in the collection loop's Run) or bypass the ==0 defaulting below entirely
 	// (Collection.Timeout, Collection.MaxConcurrent, OTel.Interval) and flow through
