@@ -18,11 +18,12 @@ Module: `github.com/fjacquet/kemp_exporter`. Binary: `kemp_exporter`. Metrics po
 
 ```bash
 make cli              # build ./bin/kemp_exporter
-make test              # go test ./...
-make test-race          # race detector + coverage
+make test              # go test -race with an atomic coverage profile (NOT a plain go test)
+make test-race          # go test -race -cover — lighter than `make test` despite the name
 make lint              # golangci-lint run
 make vuln              # govulncheck
-make ci                # lint + test + build + vuln + semgrep — the CI gate, run this before committing
+make security          # semgrep — blocking, and part of `make ci`
+make ci                # lint + test + build + vuln + security — the CI gate, run this before committing
 make sure              # fmt-check + vet + test + build — local convenience gate
 make docker            # build the container image
 make demo              # docker compose up --build (exporter + Prometheus + Grafana)
@@ -39,6 +40,13 @@ Run a single collection cycle and dump samples without starting the HTTP server:
 `--trace` additionally logs full API response bodies (never headers; auth
 responses are skipped) — useful for live validation against a real appliance, but
 treat the output as sensitive (see `docs/metrics.md`'s live-validation checklist).
+
+The alert rules carry their own gate, not wired into `make ci`:
+
+```bash
+promtool check rules deploy/prometheus/kemp.rules.yml deploy/prometheus/kemp.rules.unconfirmed.yml
+promtool test rules deploy/prometheus/tests/kemp.rules_test.yml
+```
 
 ## Architecture
 
@@ -57,7 +65,11 @@ internal/kemp
   derivations.go              stats + listvs -> []Sample; the single derivation
                               layer above both transports
   metrics.go                  label-key constructors — the only place a []Label is
-                               built (ADR 0006)
+                               built, and the only place a label VALUE is
+                               sanitised (ADR 0006)
+  dropwarn.go                 bounds the "dropping sample" Warn lines both readers
+                               emit: one per reason/metric/system per process
+  tlsconfig.go                per-target *tls.Config; MinVersion 1.2
   snapshot.go / collector.go   background collection loop -> immutable Snapshot
                                behind an RWMutex-guarded pointer swap (ADR 0002)
   prometheus.go                PromCollector: Snapshot -> Prometheus registry gather
@@ -72,13 +84,25 @@ internal/dashboards           dashboard-vs-metric-catalog consistency tests
 
 ## Load-bearing constraints
 
-- **Absent, never zero.** A missing or unparseable numeric field produces no
-  sample — never a fabricated `0`. Enforced at the single choke point
-  `addSample` in `derivations.go`, backed by `models.Num`'s parsed/absent tracking.
+- **Absent, never zero.** A missing, unparseable, or non-finite numeric field
+  produces no sample — never a fabricated `0`. Enforced at the single choke point
+  `addSample` in `derivations.go`, backed by `models.Num`, which rejects NaN and
+  ±Inf as well as text that does not parse.
 - **Label-key invariant.** One label-key set per metric name, built only through
   the shared constructors in `metrics.go`. An unresolved name/status is an empty
   label *value*, never a missing label *key*. See
   `docs/adr/0006-label-key-union-invariant.md`.
+- **Label values are sanitised in `metrics.go`, never in a reader.** Every
+  appliance-supplied string passes through `cleanValue` (invalid UTF-8 → U+FFFD)
+  in the label constructors. Sanitising in one reader and not the other is how the
+  two readers once diverged, and invalid UTF-8 fails `proto.Marshal`, which drops
+  the entire OTLP batch — not just the offending series.
+- **A system name is validated at load, not just defaulted.** `config.Load`
+  requires every `systems[].name` to be non-empty, unique, and valid UTF-8. The
+  name becomes the `system` label on every metric as `cleanValue(name)`, so
+  comparing raw names alone is not enough: two names differing only in invalid
+  bytes collapse to one label value, and both readers' first-wins dedup then drops
+  an entire appliance while `/metrics` and `/health` stay green.
 - **No 4xx retry.** `newRestyClient`'s retry condition excludes 4xx responses:
   retrying a rejected credential against a LoadMaster with account lockout enabled
   locks the account. The JSON transport's single bounded session-refresh-on-401 is
@@ -86,7 +110,16 @@ internal/dashboards           dashboard-vs-metric-catalog consistency tests
 - **HTTP server starts before collection.** `run()` in `main.go` starts the HTTP
   listener first, then the collection loop — `/metrics` and `/health` are reachable
   (health reporting "starting") even before the first collection cycle completes.
-- **No inline suppressions.** No `//nolint`, no `// nosemgrep` anywhere in the tree.
+- **Drained backends are excluded in the alert layer, never in the metric.**
+  `statusToUp` maps "Disabled" to `0` on purpose: `kemp_*_up` means "is this
+  serving traffic", which is what dashboards and SLOs want. The two Down alerts in
+  `deploy/prometheus/kemp.rules.yml` exclude disabled objects themselves, matching
+  case-insensitively and tolerating surrounding whitespace because the exporter
+  trims before mapping. Do not "fix" a paging complaint by changing `statusToUp`.
+  Equally, an unrecognised status yields no `_up` sample at all — the per-object
+  `*StatusUnrecognised` alerts exist to surface that blind spot, and they must join
+  on the full identity label set, since `on(system)` is satisfied by any sibling.
+- **No inline suppressions.** No `//nolint`, no `// nosemgrep`, no `//#nosec` anywhere in the tree.
   A false-positive lint/semgrep finding is fixed at its root cause or addressed in
   the project-level tool config — never silenced inline. The Definition of Done
   greps for both patterns.
@@ -126,8 +159,9 @@ entry in `internal/dashboards/dashboards_test.go`'s `knownMetrics` map.
 shared `fjacquet/ci` reusable workflows, pinned to the `@v1` tag (a deliberate
 first-party trade-off — see
 `docs/adr/0001-supply-chain-and-release-hardening.md`). The Makefile is the
-portable contract: `make ci` (lint + test-race + build + govulncheck + semgrep) is what CI
-actually runs; `make sbom`/`make security`/`make docs` back the SBOM, Semgrep, and
-docs-site jobs respectively. Releases are GoReleaser-driven (`.goreleaser.yaml`):
+portable contract: `make ci` (lint + test + build + vuln + security) is what CI
+actually runs — `test` is already race-enabled, and `security` runs semgrep as a
+blocking step. `make sbom`/`make docs` back the SBOM and docs-site jobs. Semgrep's
+default ignores skip `*_test.go`, so that gate covers production code only. Releases are GoReleaser-driven (`.goreleaser.yaml`):
 cross-compiled binaries, checksums, a CycloneDX SBOM per release, a multi-arch GHCR
 image, and an optional Homebrew cask gated on a cross-repo token.
