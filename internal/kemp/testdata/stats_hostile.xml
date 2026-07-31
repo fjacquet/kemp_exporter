@@ -7,6 +7,18 @@
         <BytesPerSec>N/A</BytesPerSec>
         <PktsPerSec></PktsPerSec>
       </VStotals>
+      <!-- A CPU section with one row mixing a parseable field with two
+           unparseable ones, mirroring the <Memory> pattern above. Without this the
+           fixture had no <CPU> block at all, so the test named for the addSample
+           choke point exercised only "empty section -> zero loop iterations",
+           which cannot reach addSample. -->
+      <CPU>
+        <total>
+          <User>12</User>
+          <System>N/A</System>
+          <Idle></Idle>
+        </total>
+      </CPU>
       <Memory>
         <memused>2147483648</memused>
         <percentmemused>N/A</percentmemused>

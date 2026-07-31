@@ -128,11 +128,24 @@ func TestDeriveHealthOmitsUnparseableFields(t *testing.T) {
 	if !hasSample(samples, "kemp_memory_used_bytes") {
 		t.Error("kemp_memory_used_bytes missing; a sibling field failing must not drop it")
 	}
-	// The fixture has no TPS, CPU, or Network section at all.
+	// The CPU row mixes a parseable field with two unparseable ones, which is what
+	// makes this a test of the addSample choke point per FIELD rather than of an
+	// absent section producing zero loop iterations.
+	if s, ok := findSample(samples, "kemp_cpu_user_percent", "lm-01", "total"); !ok || s.Value != 12 {
+		t.Errorf("kemp_cpu_user_percent{cpu=\"total\"} = %+v, want 12 (the one field that parsed)", s)
+	}
+	for _, name := range []string{
+		"kemp_cpu_system_percent", // N/A
+		"kemp_cpu_idle_percent",   // empty
+	} {
+		if hasSample(samples, name) {
+			t.Errorf("%s emitted for an unparseable field on a row whose sibling DID parse; want absent", name)
+		}
+	}
+	// The fixture has no TPS or Network section at all.
 	for _, name := range []string{
 		"kemp_tps", "kemp_tps_ssl",
 		"kemp_interface_bytes_read_total", "kemp_interface_bytes_written_total",
-		"kemp_cpu_idle_percent", "kemp_cpu_user_percent", "kemp_cpu_system_percent",
 	} {
 		if hasSample(samples, name) {
 			t.Errorf("%s emitted with no source section; want absent", name)

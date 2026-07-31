@@ -24,6 +24,9 @@ func TestLabelBuildersCanonicalOrder(t *testing.T) {
 
 	rs := rsLabels("lm-01", "192.168.1.20", 8443, "10.0.0.10", 443)
 	wantRS := []string{"system", "address", "port", "vs_address", "vs_port"}
+	if len(rs) != len(wantRS) {
+		t.Fatalf("rsLabels returned %d labels, want %d", len(rs), len(wantRS))
+	}
 	for i, key := range wantRS {
 		if rs[i].Key != key {
 			t.Errorf("rsLabels[%d].Key = %q, want %q", i, rs[i].Key, key)
@@ -100,6 +103,12 @@ func TestCPULabelsAndInterfaceLabelsCanonicalOrder(t *testing.T) {
 
 	iface := interfaceLabels("lm-01", "eth0")
 	wantIface := []string{"system", "interface"}
+	// Length first, as in the cpuLabels half above: without it an EXTRA trailing
+	// label passes silently, and "extra key" is precisely the regression the
+	// label-key union invariant exists to catch.
+	if len(iface) != len(wantIface) {
+		t.Fatalf("interfaceLabels returned %d labels, want %d", len(iface), len(wantIface))
+	}
 	for i, key := range wantIface {
 		if iface[i].Key != key {
 			t.Errorf("interfaceLabels[%d].Key = %q, want %q", i, iface[i].Key, key)

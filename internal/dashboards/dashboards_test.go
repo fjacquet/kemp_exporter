@@ -122,9 +122,24 @@ func TestDashboardsDoNotRateGauges(t *testing.T) {
 		"kemp_tps",
 		"kemp_tps_ssl",
 		"kemp_memory_used_percent",
+		"kemp_memory_used_bytes",
+		"kemp_memory_free_bytes",
 		"kemp_cpu_idle_percent",
+		"kemp_cpu_user_percent",
+		"kemp_cpu_system_percent",
 	}
-	paths, _ := filepath.Glob(filepath.Join("..", "..", "grafana", "*.json"))
+	// The glob error and the empty result are BOTH fatal, exactly as in the
+	// sibling test above: this is the only mechanical guard on the family's core
+	// semantic rule (per-second values are gauges, never rate()), and discarding
+	// the error or skipping the empty check turns it into a silent no-op the
+	// moment grafana/ is moved or renamed.
+	paths, err := filepath.Glob(filepath.Join("..", "..", "grafana", "*.json"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no dashboard JSON found under grafana/")
+	}
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {

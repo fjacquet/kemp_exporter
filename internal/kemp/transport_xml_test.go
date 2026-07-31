@@ -185,12 +185,26 @@ func TestDecodeSuccessDataIgnoresSiblingData(t *testing.T) {
 	}
 }
 
-// TLS 1.2 is the family floor. This asserts the client refuses to negotiate below it.
-func TestXMLTransportMinTLS12(t *testing.T) {
+// TLS 1.2 is the family floor, and this is the only test guarding it.
+//
+// The previous version of this test could not fail. It set only MaxVersion on the
+// test server, leaving the stdlib server's own default MinVersion at TLS 1.2, so
+// negotiation was impossible no matter what the client offered -- the handshake was
+// refused by GO'S OWN SERVER, not by this repo's client, and lowering
+// tlsconfig.go's MinVersion to TLS 1.0 left the test green. (Confirmed by mutation
+// both before and after this rewrite.)
+//
+// So the server here is WILLING to speak TLS 1.1: MinVersion AND MaxVersion are
+// both pinned below the floor. The only party left that can refuse is the client,
+// which is the invariant under test.
+func TestXMLTransportRefusesTLSBelow12(t *testing.T) {
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeBytes(w, fixture(t, "stats.xml"))
 	}))
-	srv.TLS = &tls.Config{MaxVersion: tls.VersionTLS11}
+	srv.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS10,
+		MaxVersion: tls.VersionTLS11,
+	}
 	srv.StartTLS()
 	defer srv.Close()
 
@@ -199,10 +213,28 @@ func TestXMLTransportMinTLS12(t *testing.T) {
 		t.Fatalf("newXMLTransport: %v", err)
 	}
 	var st models.Statistics
-	if err := tr.Do(context.Background(), "stats", nil, &st); err == nil {
-		t.Fatal("handshake succeeded against a TLS 1.1 server; want failure")
-	} else if !strings.Contains(strings.ToLower(err.Error()), "tls") &&
-		!strings.Contains(strings.ToLower(err.Error()), "protocol version") {
-		t.Logf("got error %v (accepted: any handshake failure)", err)
+	err = tr.Do(context.Background(), "stats", nil, &st)
+	if err == nil {
+		t.Fatal("the client completed a handshake with a TLS 1.1-only server; " +
+			"the TLS 1.2 floor is not being enforced by this client")
+	}
+	// Assert on the REASON, not merely that something failed: a typo'd URL or a
+	// closed port would also produce a non-nil error here.
+	if msg := strings.ToLower(err.Error()); !strings.Contains(msg, "protocol version") &&
+		!strings.Contains(msg, "tls") {
+		t.Fatalf("error = %v, want a TLS version-negotiation failure", err)
+	}
+}
+
+// The direct statement of the same invariant, independent of any handshake: the
+// floor is a property of the config this package builds.
+func TestTLSConfigPinsMinVersion12(t *testing.T) {
+	got := tlsConfigFor(configSystem{})
+	if got.MinVersion != tls.VersionTLS12 {
+		t.Errorf("tlsConfigFor().MinVersion = %#x, want %#x (TLS 1.2, the family floor)",
+			got.MinVersion, tls.VersionTLS12)
+	}
+	if got.InsecureSkipVerify {
+		t.Error("tlsConfigFor() defaulted InsecureSkipVerify to true; it must come from per-target config and default false")
 	}
 }

@@ -206,14 +206,17 @@ func TestPromCollectorGaugeValueForTotalMetric(t *testing.T) {
 	store.Store(&Snapshot{Systems: []*SystemSnapshot{{
 		System: "lm-01",
 		Samples: []Sample{
-			{Name: "kemp_virtual_service_bytes_total", Labels: systemLabels("lm-01"), Value: 12345},
+			// The REAL label set for this name: derivations.go emits it with
+			// vsLabels' five keys. Pairing the production name with systemLabels
+			// pinned a schema that never occurs.
+			{Name: "kemp_virtual_service_bytes_total", Labels: vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp"), Value: 12345},
 		},
 	}}})
 
 	want := `
 # HELP kemp_virtual_service_bytes_total Kemp LoadMaster metric kemp_virtual_service_bytes_total
 # TYPE kemp_virtual_service_bytes_total gauge
-kemp_virtual_service_bytes_total{system="lm-01"} 12345
+kemp_virtual_service_bytes_total{address="10.0.0.10",name="web",port="443",protocol="tcp",system="lm-01"} 12345
 `
 	if err := testutil.CollectAndCompare(NewPromCollector(store), strings.NewReader(want)); err != nil {
 		t.Fatalf("unexpected exposition for a _total metric: %v", err)

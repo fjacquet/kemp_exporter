@@ -268,24 +268,14 @@ func TestReloadHandlerUpdatesLoopClientsWithoutRebuildingLoop(t *testing.T) {
 	}
 }
 
-// Registering the same build-info collector twice -- the obvious way a reload
-// path could get this wrong -- returns AlreadyRegisteredError. That is correct
-// singleton behavior for the registry to enforce, not a bug to work around; this
-// documents the exact failure main's wiring must never trigger. main's own
-// reload closure (built by makeReloadHandler) has no reference to the registry
-// at all, which is what makes a second registration structurally unreachable
-// from that path, not just accidentally avoided.
-func TestBuildInfoCollectorSecondRegistrationFails(t *testing.T) {
-	reg := prometheus.NewRegistry()
-	if err := reg.Register(kemp.NewBuildInfoCollector("v1", "go1.26.5")); err != nil {
-		t.Fatalf("first Register: %v", err)
-	}
-	err := reg.Register(kemp.NewBuildInfoCollector("v1", "go1.26.5"))
-	var are prometheus.AlreadyRegisteredError
-	if !errors.As(err, &are) {
-		t.Fatalf("second Register error = %#v, want AlreadyRegisteredError", err)
-	}
-}
+// REMOVED (final review, must-fix 10): TestBuildInfoCollectorSecondRegistrationFails.
+// It asserted only that client_golang's registry returns AlreadyRegisteredError on
+// a duplicate registration -- entirely third-party behaviour. Mutation confirmed it:
+// renaming the build_info metric left it green, while TestBuildInfoCollector (in the
+// kemp package) caught the rename. Its own comment already conceded that main's
+// reload closure "has no reference to the registry at all", which is the real
+// guarantee: a second registration is unreachable from the reload path by SCOPE, and
+// scope is not something a test of the registry can demonstrate.
 
 // telemetry.ShutdownAll's own doc comment warns that a nil *kemp.OTLPExporter
 // boxed into its Shutdowner interface parameter becomes a non-nil interface
