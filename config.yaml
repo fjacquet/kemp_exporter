@@ -1,0 +1,31 @@
+---
+server:
+  host: "0.0.0.0"
+  port: "9447"
+  uri: "/metrics"
+  logName: ""            # "" -> stdout
+collection:
+  interval: "60s"        # tune freely; no metric depends on the cycle length
+  timeout: "60s"
+  maxConcurrent: 4
+otel:
+  enabled: false
+  endpoint: "localhost:4317"
+  insecure: true
+  interval: "10s"
+systems:
+  # Single-target quickstart: set KEMP1_HOSTNAME and KEMP1_APIKEY in the
+  # environment (or a .env file). config.yaml is the source of truth — for
+  # multiple LoadMasters add one entry per appliance.
+  - name: lm-prod-01
+    host: "${KEMP1_HOSTNAME}"
+    # XML transport: a static API key, ideally scoped read-only.
+    apiKey: "${KEMP1_APIKEY}"
+    # JSON transport: session login. Optional; supply if the appliance runs
+    # firmware 7.2.50+ with session management enabled.
+    # username: "${KEMP1_USERNAME}"
+    # password: "${KEMP1_PASSWORD}"
+    # insecureSkipVerify disables TLS certificate verification (man-in-the-middle
+    # risk). Leave it off in production; enable only for dev against a LoadMaster
+    # with a self-signed certificate. Accepts a native boolean or a ${VAR} ref.
+    # insecureSkipVerify: false
