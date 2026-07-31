@@ -3,6 +3,7 @@ package kemp
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -121,6 +122,66 @@ func TestXMLTransportDecodesListVS(t *testing.T) {
 	}
 	if len(out.VS) != 2 || out.VS[0].Name != "web-https" {
 		t.Fatalf("VS = %+v, want two entries starting with web-https", out.VS)
+	}
+}
+
+// TestXMLTransportRejectsNonOKStatWithoutErrorElement covers an appliance response
+// shape the fixtures don't: HTTP 200 with a Response stat attribute reporting a
+// rejected credential (401/403), but with no <Error> child element -- so the
+// env.Error == "" check in Do never fires and, without a check on env.Stat, this
+// used to fall straight through to decodeSuccessData and return a decode error
+// ("locate Success>Data: EOF") that reads like a truncated response and, more
+// importantly, does not satisfy errors.Is(err, errAuth) for a caller that needs
+// to distinguish "reject, do not retry" from "malformed payload".
+func TestXMLTransportRejectsNonOKStatWithoutErrorElement(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeBytes(w, []byte(`<Response stat="401"><Success/></Response>`))
+	}))
+	defer srv.Close()
+
+	tr, err := newXMLTransport(systemFor(t, srv), false)
+	if err != nil {
+		t.Fatalf("newXMLTransport: %v", err)
+	}
+	var st models.Statistics
+	err = tr.Do(context.Background(), "stats", nil, &st)
+	if err == nil {
+		t.Fatal("Do succeeded with stat=\"401\" and no <Error> element; want an error")
+	}
+	if !errors.Is(err, errAuth) {
+		t.Errorf("err = %v; want errors.Is(err, errAuth)", err)
+	}
+}
+
+// TestDecodeSuccessDataRequiresDirectChild guards decodeSuccessData against
+// decoding a Data element that is nested under an extra wrapper inside Success,
+// rather than being a direct child of it. Canonical LoadMaster responses never
+// have this shape, so this is robustness, not a real-world regression fixture --
+// but decodeSuccessData's token loop, absent depth tracking, will happily locate
+// and decode any Data anywhere inside Success, silently accepting a payload from
+// the wrong place in the tree.
+func TestDecodeSuccessDataRequiresDirectChild(t *testing.T) {
+	body := []byte(`<Response><Success><Wrap><Data><Foo>1</Foo></Data></Wrap></Success></Response>`)
+	var out struct {
+		Foo string `xml:"Foo"`
+	}
+	if err := decodeSuccessData(body, &out); err == nil {
+		t.Fatalf("decodeSuccessData decoded a Data nested under an extra wrapper "+
+			"inside Success; want an error since Data must be a direct child (got Foo=%q)", out.Foo)
+	}
+}
+
+// TestDecodeSuccessDataIgnoresSiblingData guards decodeSuccessData against
+// decoding a Data element that is a sibling of Success (i.e. appears after
+// Success has already closed), rather than a child of it.
+func TestDecodeSuccessDataIgnoresSiblingData(t *testing.T) {
+	body := []byte(`<Response><Success/><Data><Foo>1</Foo></Data></Response>`)
+	var out struct {
+		Foo string `xml:"Foo"`
+	}
+	if err := decodeSuccessData(body, &out); err == nil {
+		t.Fatalf("decodeSuccessData decoded a Data that is a sibling of Success, "+
+			"not a child of it; want an error (got Foo=%q)", out.Foo)
 	}
 }
 

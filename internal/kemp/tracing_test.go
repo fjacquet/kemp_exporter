@@ -57,3 +57,19 @@ func TestTracingDoesNotLeakAPIKey(t *testing.T) {
 		}
 	}
 }
+
+// TestRedactQueryFailsClosedOnParseError asserts redactQuery reports failure
+// (rather than silently returning "") when its input does not parse as a URL.
+// installTracing's isAuthPath check runs on redactQuery's output; a redactQuery
+// that fails open by returning ("", nil-equivalent-success) would make
+// isAuthPath("") report false, and a would-be-auth response would fall through
+// to the branch that logs the full body -- exactly the leak the auth-path skip
+// exists to prevent for the JSON transport's login response.
+func TestRedactQueryFailsClosedOnParseError(t *testing.T) {
+	// An invalid percent-encoding escape makes url.Parse itself fail.
+	const unparseable = "http://example.com/access/stats%zz?apikey=secret"
+	path, ok := redactQuery(unparseable)
+	if ok {
+		t.Fatalf("redactQuery(%q) = (%q, true); want ok=false for an unparseable URL so installTracing fails closed", unparseable, path)
+	}
+}

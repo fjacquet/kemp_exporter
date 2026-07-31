@@ -70,6 +70,9 @@ func (t *xmlTransport) Do(ctx context.Context, cmd string, params map[string]str
 	if env.Error != "" {
 		return fmt.Errorf("xml %s: appliance error: %s", cmd, env.Error)
 	}
+	if err := checkEnvelopeStat(cmd, env.Stat); err != nil {
+		return err
+	}
 
 	// Then decode the payload into the caller's type. encoding/xml cannot decode
 	// into an `any` field holding a pointer via struct tags, so the Success>Data
@@ -81,31 +84,64 @@ func (t *xmlTransport) Do(ctx context.Context, cmd string, params map[string]str
 	return nil
 }
 
-// decodeSuccessData walks body looking for the Data element nested under
-// Response>Success, then decodes that element (and its children) into out.
+// checkEnvelopeStat maps a non-"200" Response stat attribute to an actionable
+// error.
+//
+// The appliance can report a rejected credential purely through this attribute,
+// with no <Error> child element at all -- e.g. HTTP 200 with body
+// `<Response stat="401"><Success/></Response>`. Left unchecked, that shape falls
+// straight through to decodeSuccessData, which reports "locate Success>Data:
+// EOF" -- indistinguishable from a genuinely truncated response, and not
+// errors.Is(err, errAuth)-matchable by a caller that needs to know not to retry.
+func checkEnvelopeStat(cmd, stat string) error {
+	switch stat {
+	case "", "200":
+		return nil
+	case "401", "403":
+		return fmt.Errorf("xml %s: %w (stat %s)", cmd, errAuth, stat)
+	default:
+		return fmt.Errorf("xml %s: appliance returned stat %s", cmd, stat)
+	}
+}
+
+// decodeSuccessData walks body looking for the Data element that is a direct
+// child of Response>Success, then decodes that element (and its children) into
+// out.
 //
 // This does not call d.Skip() on non-matching elements: Skip() discards the entire
 // subtree of the element whose start tag was just consumed, which would jump past
 // Success and Data before ever finding them. Instead every token is inspected as the
 // decoder naturally descends depth-first, and only the Data start element is handed
-// off, via DecodeElement, once Success has been seen as an ancestor.
+// off, via DecodeElement, once Success has been seen as its immediate parent.
+//
+// Depth is tracked explicitly so a Data nested further down (Success>Wrap>Data) is
+// not mistaken for the payload, and successDepth is cleared on Success's matching
+// EndElement so a Data that is a sibling of Success, not a child of it, is not
+// mistaken for the payload either.
 func decodeSuccessData(body []byte, out any) error {
 	d := xml.NewDecoder(bytes.NewReader(body))
-	var inSuccess bool
+	const notInSuccess = -1
+	successDepth := notInSuccess
+	depth := 0
 	for {
 		tok, err := d.Token()
 		if err != nil {
 			return fmt.Errorf("locate Success>Data: %w", err)
 		}
-		start, ok := tok.(xml.StartElement)
-		if !ok {
-			continue
-		}
-		switch {
-		case start.Name.Local == "Success":
-			inSuccess = true
-		case inSuccess && start.Name.Local == "Data":
-			return d.DecodeElement(out, &start)
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			switch {
+			case t.Name.Local == "Success" && successDepth == notInSuccess:
+				successDepth = depth
+			case t.Name.Local == "Data" && successDepth != notInSuccess && depth == successDepth+1:
+				return d.DecodeElement(out, &t)
+			}
+		case xml.EndElement:
+			if successDepth != notInSuccess && depth == successDepth {
+				successDepth = notInSuccess
+			}
+			depth--
 		}
 	}
 }

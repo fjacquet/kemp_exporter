@@ -16,8 +16,12 @@ import (
 // response body — body-only logging is not sufficient there.
 func installTracing(c *resty.Client) {
 	c.OnAfterResponse(func(_ *resty.Client, r *resty.Response) error {
-		path := redactQuery(r.Request.URL)
-		if isAuthPath(path) {
+		path, ok := redactQuery(r.Request.URL)
+		// An unparseable URL is treated as an auth path: fail closed. The auth-path
+		// skip exists specifically so the JSON transport's login response (token in
+		// the body) never gets its body logged, and a URL redactQuery could not
+		// parse is not a URL this hook can prove is safe to treat otherwise.
+		if !ok || isAuthPath(path) {
 			logrus.WithFields(logrus.Fields{
 				"method": r.Request.Method,
 				"path":   path,
@@ -35,21 +39,23 @@ func installTracing(c *resty.Client) {
 	})
 }
 
-// redactQuery drops the query string from a request URL before it is logged.
+// redactQuery drops the query string from a request URL before it is logged,
+// reporting false if rawURL does not parse as a URL at all.
 //
 // resty's Request.URL is the fully resolved URL, query parameters included: the
 // XML transport's apikey travels there, so logging it verbatim would put the
-// credential in every trace line regardless of the isAuthPath check below (which
-// only gates whether the body is also logged). An unparseable URL is reported as
-// "" rather than logged raw, since a raw string that failed to parse as a URL
-// could itself be exactly the credential-bearing value this is guarding against.
-func redactQuery(rawURL string) string {
+// credential in every trace line regardless of the isAuthPath check (which only
+// gates whether the body is also logged). The bool result lets callers fail
+// closed on a parse error instead of silently treating "" as an ordinary,
+// non-authenticated path: a raw string that failed to parse as a URL could
+// itself be exactly the credential-bearing value this is guarding against.
+func redactQuery(rawURL string) (string, bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	u.RawQuery = ""
-	return u.String()
+	return u.String(), true
 }
 
 // isAuthPath reports whether a response from this path may carry credentials.
