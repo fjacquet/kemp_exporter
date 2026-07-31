@@ -224,8 +224,16 @@ carries the bulk of the unit tests.
 
 ## 5. Data flow
 
-One cycle per `collection.interval`, default `60s`. LoadMaster stats are cheap, and the
-dashboard wants finer resolution than the family's 5m storage default.
+One cycle per `collection.interval` — a **configuration item**, not a compile-time constant.
+The shipped `config.yaml` sets `60s`: LoadMaster stats are cheap, and the dashboard wants finer
+resolution than the family's 5m storage default. Operators tune it per deployment, and it is
+picked up by SIGHUP / file-watch reload without a restart, alongside `collection.timeout` and
+the max-concurrent-targets cap.
+
+Because the interval is tunable, no derived metric may assume a fixed cycle length: everything
+the exporter emits is either an instantaneous gauge or a cumulative counter, and all
+rate-of-change is computed in PromQL (§6.1). Changing the interval therefore changes only
+resolution and API load, never metric semantics.
 
 ```
 for each target (errgroup, SetLimit = maxConcurrent):
