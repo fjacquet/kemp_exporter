@@ -1,4 +1,26 @@
 ---
+# Every value alert here (KempVirtualServiceDown, KempVirtualServiceDegraded,
+# KempRealServerDown, KempMemoryLow, KempCPUHigh) is paired with a companion that
+# detects when its own metric family has gone missing for an otherwise-reachable
+# appliance. This matters because of the exporter's absent-not-zero policy: a
+# parse failure removes a series rather than zeroing it, so without a companion a
+# vanished metric would silently stop alerting instead of loudly doing so.
+#
+# The companion pattern is per-system correlation, not bare absent():
+#
+#   kemp_up == 1 unless on(system) <metric>
+#
+# This reads "the appliance is reachable but this metric did not arrive for it" —
+# a genuine blind spot, scoped to the system it affects. Bare absent(<metric>)
+# would only fire once <metric> is gone across every system at once, which in a
+# multi-appliance deployment masks a single appliance's failure, and for
+# kemp_virtual_service_status{status="Sick"} specifically would fire constantly
+# in the normal healthy case (see the note on KempVirtualServiceStatusMetricMissing
+# below).
+#
+# The one exception is KempExporterNotReporting, which uses absent(kemp_up)
+# directly: kemp_up itself has no per-system correlate to join against — it IS
+# the correlate every other companion joins on.
 groups:
   - name: kemp
     rules:
@@ -28,6 +50,15 @@ groups:
         annotations:
           summary: "Virtual service {{ $labels.name }} ({{ $labels.address }}:{{ $labels.port }}) is down"
 
+      - alert: KempVirtualServiceMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_virtual_service_up
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Virtual-service metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but no kemp_virtual_service_up series exist for it, so KempVirtualServiceDown cannot fire."
+
       # NOTE on case sensitivity: `status` is the LoadMaster's own status string,
       # passed through unmodified — the exporter lowercases only for its internal
       # up/down mapping (kemp_virtual_service_up), never for this label's value.
@@ -46,6 +77,22 @@ groups:
           summary: "Virtual service {{ $labels.name }} is Sick"
           description: "Still serving traffic, but the LoadMaster reports it degraded."
 
+      # This companion deliberately does NOT repeat the {status="Sick"} selector:
+      # KempVirtualServiceDegraded can only fire if the kemp_virtual_service_status
+      # family exists at all for this system. That family is only emitted once the
+      # listvs join resolves a status, so its total absence for a reachable
+      # appliance is exactly the blind spot to catch. Filtering to status="Sick"
+      # here would instead alert whenever nothing is sick — the opposite of what
+      # we want.
+      - alert: KempVirtualServiceStatusMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_virtual_service_status
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Virtual-service status metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but no kemp_virtual_service_status series exist for it, so KempVirtualServiceDegraded cannot fire."
+
       - alert: KempRealServerDown
         expr: kemp_real_server_up == 0
         for: 5m
@@ -53,6 +100,19 @@ groups:
           severity: warning
         annotations:
           summary: "Real server {{ $labels.address }}:{{ $labels.port }} is down"
+
+      # NOTE: this also fires on an appliance with zero real servers configured —
+      # a legitimate configuration, not a fault. If this rule is firing on an
+      # otherwise-healthy, reachable appliance, check whether it simply has no
+      # real servers defined before treating it as a parse failure.
+      - alert: KempRealServerMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_real_server_up
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Real-server metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but no kemp_real_server_up series exist for it, so KempRealServerDown cannot fire. This is also expected on an appliance configured with zero real servers."
 
       - alert: KempMemoryLow
         expr: kemp_memory_used_percent > 90
@@ -78,3 +138,12 @@ groups:
           severity: warning
         annotations:
           summary: "LoadMaster {{ $labels.system }} CPU above 90%"
+
+      - alert: KempCPUMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_cpu_idle_percent{cpu="total"}
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but the aggregate CPU row did not parse, so KempCPUHigh cannot fire."
