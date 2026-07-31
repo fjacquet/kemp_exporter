@@ -121,7 +121,6 @@ func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 				}).Warn("dropping sample: duplicate label values for a metric name already emitted this scrape")
 				continue
 			}
-			entry.seen[sig] = struct{}{}
 
 			m, err := prometheus.NewConstMetric(entry.desc, prometheus.GaugeValue, s.Value, vals...)
 			if err != nil {
@@ -129,9 +128,15 @@ func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 					"metric": s.Name,
 					"system": sys.System,
 					"keys":   keys,
+					"vals":   vals,
 				}).WithError(err).Warn("dropping sample: could not render as a metric")
 				continue
 			}
+			// Marked only now that the sample is confirmed renderable: marking it
+			// before this point would misreport a later sample sharing this exact
+			// tuple as a duplicate, when what actually happened is this sample never
+			// rendered at all.
+			entry.seen[sig] = struct{}{}
 			ch <- m
 		}
 	}
