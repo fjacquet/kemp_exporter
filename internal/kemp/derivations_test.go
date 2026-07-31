@@ -205,6 +205,62 @@ func TestDeriveRealServersLinksToVirtualService(t *testing.T) {
 	}
 }
 
+// Review follow-up F1: the stats payload's own VSProt is authoritative when present,
+// but a blanked VSProt must fall back to listvs's Protocol rather than silently
+// degrading the label to empty. Index 10 in the hostile fixture has an empty VSProt;
+// the listvs entry supplied here (constructed inline rather than from a fixture file,
+// since listvs.xml's two-entry shape is itself asserted elsewhere and must not change)
+// is the only source of "tcp" for this service.
+func TestDeriveVSProtocolFallsBackToListVSWhenStatsOmitsIt(t *testing.T) {
+	st := decodeStats(t, "stats_hostile.xml")
+	info := []models.VirtualServiceInfo{
+		{Index: 10, Name: "empty-protocol-vs", Address: "10.0.0.77", Port: 9090, Protocol: "tcp", Status: "Up"},
+	}
+	samples := deriveVirtualServices("lm-01", st, info)
+
+	s, ok := findSample(samples, "kemp_virtual_service_active_connections", "lm-01", "empty-protocol-vs", "10.0.0.77", "9090", "tcp")
+	if !ok {
+		t.Fatalf("no sample with protocol falling back to listvs's \"tcp\"; got %+v", samples)
+	}
+	if s.Value != 6 {
+		t.Errorf("active connections = %v, want 6", s.Value)
+	}
+}
+
+// Review follow-up F2: deriveRealServers' vsByIndex prefers the stats payload's own
+// Vs entries but must fall back to listvs when a real server's VSIndex has no
+// corresponding Vs row in stats (a truncated or omitted parent row). VSIndex 1 is
+// present in listvs.xml but not among the hostile fixture's own Vs entries (only 9
+// and 10), so this is the only test that actually observes the fallback branch
+// supply a real vs_address/vs_port rather than the zero-value default.
+func TestDeriveRealServersFallsBackToListVSForParentIdentity(t *testing.T) {
+	st := decodeStats(t, "stats_hostile.xml")
+	info := decodeVSInfo(t, "listvs.xml")
+	samples := deriveRealServers("lm-01", st, info)
+
+	s, ok := findSample(samples, "kemp_real_server_active_connections", "lm-01", "192.168.1.40", "8080", "10.0.0.10", "443")
+	if !ok {
+		t.Fatalf("no real-server sample with parent identity resolved via the listvs fallback; got %+v", samples)
+	}
+	if s.Value != 1 {
+		t.Errorf("active connections = %v, want 1", s.Value)
+	}
+}
+
+// Review follow-up F3: a nil *models.Statistics is the shape a failed scrape takes
+// (Task 11+ collection loop). Both derivations must return nil rather than panic.
+func TestDeriveVirtualServicesNilStatisticsReturnsNil(t *testing.T) {
+	if got := deriveVirtualServices("lm-01", nil, nil); got != nil {
+		t.Errorf("deriveVirtualServices(nil statistics) = %+v, want nil", got)
+	}
+}
+
+func TestDeriveRealServersNilStatisticsReturnsNil(t *testing.T) {
+	if got := deriveRealServers("lm-01", nil, nil); got != nil {
+		t.Errorf("deriveRealServers(nil statistics) = %+v, want nil", got)
+	}
+}
+
 // Carry-forward from Task 7: models.RealServer.Status is absent from both stats.xml
 // and stats.json, so kemp_real_server_up / kemp_real_server_status went completely
 // untested and a struct-tag mismatch on that one field could pass silently. The

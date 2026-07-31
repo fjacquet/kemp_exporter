@@ -56,14 +56,6 @@ func addSample(out []Sample, name string, labels []Label, n models.Num) []Sample
 	return append(out, Sample{Name: name, Labels: labels, Value: v})
 }
 
-// known reports a models.Num carrying an always-present value, for the _up/_status
-// samples derived from a status string rather than read directly off the wire.
-// Routing these through addSample too (rather than appending a Sample literal
-// directly) keeps addSample the single place a Sample is ever constructed.
-func known(v float64) models.Num {
-	return models.Num{Val: v, OK: true}
-}
-
 // deriveVirtualServices turns the stats payload's Vs entries into samples, joining
 // each against listvs for its name and status.
 func deriveVirtualServices(system string, st *models.Statistics, info []models.VirtualServiceInfo) []Sample {
@@ -74,8 +66,18 @@ func deriveVirtualServices(system string, st *models.Statistics, info []models.V
 	var out []Sample
 
 	for _, vs := range st.VirtualServices {
-		meta := idx[vsKey(vs.Address, vs.Port)] // zero value gives an unresolved name/status
-		labels := vsLabels(system, meta.Name, vs.Address, vs.Port, vs.Protocol)
+		meta := idx[vsKey(vs.Address, vs.Port)] // zero value gives an unresolved name/status/protocol
+
+		// The stats payload's own VSProt is the live, per-scrape reading and wins
+		// whenever present. listvs's Protocol is a fallback, not a competing source
+		// of truth: an appliance that blanks VSProt on a stats row can still report
+		// the service's protocol via listvs, and falling back beats silently
+		// degrading the label to empty.
+		protocol := vs.Protocol
+		if protocol == "" {
+			protocol = meta.Protocol
+		}
+		labels := vsLabels(system, meta.Name, vs.Address, vs.Port, protocol)
 
 		out = addSample(out, "kemp_virtual_service_active_connections", labels, vs.ActiveConns)
 		out = addSample(out, "kemp_virtual_service_connections_per_second", labels, vs.ConnsPerSec)
@@ -90,10 +92,13 @@ func deriveVirtualServices(system string, st *models.Statistics, info []models.V
 		if meta.Status == "" {
 			continue
 		}
-		if v, ok := statusToUp(meta.Status); ok {
-			out = addSample(out, "kemp_virtual_service_up", labels, known(v))
-		}
-		out = addSample(out, "kemp_virtual_service_status", withLabel(labels, "status", meta.Status), known(1))
+		// statusToUp's own (value, ok) pair is exactly a models.Num's shape, so
+		// passing it straight through addSample makes addSample the single place
+		// that decides absence as well as the single place a Sample is built —
+		// there is no separate "if ok" gate outside it to keep in sync.
+		v, ok := statusToUp(meta.Status)
+		out = addSample(out, "kemp_virtual_service_up", labels, models.Num{Val: v, OK: ok})
+		out = addSample(out, "kemp_virtual_service_status", withLabel(labels, "status", meta.Status), models.Num{Val: 1, OK: true})
 	}
 	return out
 }
@@ -136,10 +141,9 @@ func deriveRealServers(system string, st *models.Statistics, info []models.Virtu
 		if rs.Status == "" {
 			continue
 		}
-		if v, ok := statusToUp(rs.Status); ok {
-			out = addSample(out, "kemp_real_server_up", labels, known(v))
-		}
-		out = addSample(out, "kemp_real_server_status", withLabel(labels, "status", rs.Status), known(1))
+		v, ok := statusToUp(rs.Status)
+		out = addSample(out, "kemp_real_server_up", labels, models.Num{Val: v, OK: ok})
+		out = addSample(out, "kemp_real_server_status", withLabel(labels, "status", rs.Status), models.Num{Val: 1, OK: true})
 	}
 	return out
 }

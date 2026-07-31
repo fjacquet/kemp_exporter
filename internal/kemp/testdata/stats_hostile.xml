@@ -25,6 +25,27 @@
         <BytesRead>1</BytesRead>
         <BytesWritten>2</BytesWritten>
       </Vs>
+      <!-- Index 10 is appended AFTER index 9 deliberately: several tests locate a
+           sample by metric name alone (no label filter) and rely on index 9's
+           values being the first match. This entry's own numeric fields mirror
+           index 9's absent-field pattern (TotalPkts/TotalBytes/ConnsPerSec all
+           unparseable) so it does not introduce a spurious match for the
+           hasSample(...)-must-be-absent checks either. Its purpose is narrow: an
+           empty VSProt with a listvs entry supplying the protocol, for the
+           protocol-fallback test. -->
+      <Vs>
+        <Index>10</Index>
+        <VSAddress>10.0.0.77</VSAddress>
+        <VSPort>9090</VSPort>
+        <VSProt></VSProt>
+        <TotalConns>3</TotalConns>
+        <TotalPkts>N/A</TotalPkts>
+        <TotalBytes></TotalBytes>
+        <ActiveConns>6</ActiveConns>
+        <ConnsPerSec>N/A</ConnsPerSec>
+        <BytesRead>8</BytesRead>
+        <BytesWritten>9</BytesWritten>
+      </Vs>
       <Rs>
         <VSIndex>9</VSIndex>
         <RSIndex>1</RSIndex>
@@ -66,6 +87,25 @@
         <BytesRead>1</BytesRead>
         <BytesWritten>1</BytesWritten>
         <Status>Bogus</Status>
+      </Rs>
+      <!-- VSIndex 1 is NOT one of this fixture's own Vs entries (only 9 and 10
+           above) but IS present in listvs.xml — this is the "stats row for the
+           parent VS was truncated/absent but listvs still knows about it" case,
+           exercising deriveRealServers' vsByIndex fallback onto the listvs info
+           slice rather than st.VirtualServices. -->
+      <Rs>
+        <VSIndex>1</VSIndex>
+        <RSIndex>4</RSIndex>
+        <Addr>192.168.1.40</Addr>
+        <Port>8080</Port>
+        <Conns>1</Conns>
+        <Pkts>1</Pkts>
+        <Bytes>1</Bytes>
+        <ActiveConns>1</ActiveConns>
+        <ConnsPerSec>1</ConnsPerSec>
+        <BytesRead>1</BytesRead>
+        <BytesWritten>1</BytesWritten>
+        <Status>Up</Status>
       </Rs>
     </Data>
   </Success>
