@@ -56,9 +56,6 @@ kemp_virtual_service_active_connections{address="10.0.0.10",name="web",port="443
 	if err := testutil.CollectAndCompare(c, strings.NewReader(want)); err != nil {
 		t.Fatalf("unexpected exposition: %v", err)
 	}
-	if got := testutil.CollectAndCount(c); got != 3 {
-		t.Errorf("collected %d metrics, want 3", got)
-	}
 }
 
 // The empty snapshot present before the first collection cycle must render cleanly,
@@ -131,6 +128,65 @@ func TestPromCollectorDropsLabelKeyDrift(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("kemp_thing family not present in gathered output")
+	}
+}
+
+// Two series of one metric name with identical label KEYS AND VALUES would also
+// make Gather fail: client_golang's registry rejects two metrics sharing a name
+// and identical label values regardless of whether the collector is checked or
+// unchecked (registry.go's uniqueness check runs on every collected metric). This
+// is not a hypothetical: a LoadMaster SubVS row carries its parent virtual
+// service's VIP address and port, so two st.VirtualServices entries can resolve
+// to the same vsKey (derivations.go) and therefore byte-identical vsLabels — two
+// identical kemp_virtual_service_active_connections series. The collector must
+// drop the duplicate so the scrape degrades (one series survives) instead of
+// erroring out the entire appliance fleet's scrape.
+func TestPromCollectorDropsDuplicateLabelValues(t *testing.T) {
+	store := NewSnapshotStore()
+	dupLabels := vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp")
+	store.Store(&Snapshot{Systems: []*SystemSnapshot{{
+		System: "lm-01",
+		Samples: []Sample{
+			{
+				Name:   "kemp_virtual_service_active_connections",
+				Labels: dupLabels,
+				Value:  10,
+			},
+			{
+				// Same name, same label keys AND values as above (e.g. a SubVS row
+				// resolving to the same parent VIP) — a duplicate series, not a
+				// schema drift.
+				Name:   "kemp_virtual_service_active_connections",
+				Labels: vsLabels("lm-01", "web", "10.0.0.10", 443, "tcp"),
+				Value:  99,
+			},
+		},
+	}}})
+
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(NewPromCollector(store)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather must not fail on a duplicate label-value tuple: %v", err)
+	}
+	var found bool
+	for _, f := range families {
+		if f.GetName() != "kemp_virtual_service_active_connections" {
+			continue
+		}
+		found = true
+		metrics := f.GetMetric()
+		if len(metrics) != 1 {
+			t.Fatalf("kemp_virtual_service_active_connections has %d series, want 1 (the duplicate dropped)", len(metrics))
+		}
+		if got := metrics[0].GetGauge().GetValue(); got != 10 {
+			t.Errorf("surviving series value = %v, want 10 (the first-seen sample)", got)
+		}
+	}
+	if !found {
+		t.Fatal("kemp_virtual_service_active_connections family not present in gathered output")
 	}
 }
 

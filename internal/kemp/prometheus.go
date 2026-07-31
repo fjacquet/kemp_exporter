@@ -2,6 +2,7 @@ package kemp
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
@@ -34,10 +35,14 @@ func (p *PromCollector) Describe(chan<- *prometheus.Desc) {}
 
 // nameSchema pins one metric name's label-key set (the order every sample sharing
 // that name must agree on) to the *prometheus.Desc built from it, so Collect builds
-// a name's Desc once per scrape rather than once per sample.
+// a name's Desc once per scrape rather than once per sample. seen records the
+// label-VALUE tuples already emitted for this name, so a second sample with the
+// same keys and the same values (a duplicate series, not a schema drift) can be
+// caught too.
 type nameSchema struct {
 	keys []string
 	desc *prometheus.Desc
+	seen map[string]struct{}
 }
 
 // Collect renders every snapshot sample as a gauge metric.
@@ -64,6 +69,17 @@ type nameSchema struct {
 // through the shared builders in metrics.go, which is what keeps a name's key set
 // uniform to begin with. Firing at all means one of those builders was bypassed —
 // a bug worth seeing, not swallowing.
+//
+// A second, distinct failure mode needs its own guard: two samples of the same
+// name can agree on keys but still collide on values — e.g. a LoadMaster SubVS row
+// carries its parent virtual service's VIP address and port, so two
+// st.VirtualServices entries can resolve to the same vsKey (derivations.go) and
+// therefore byte-identical vsLabels. client_golang's registry rejects two metrics
+// sharing a name AND identical label values outright — for unchecked collectors
+// too — which would fail the whole Gather call, every scrape, until the
+// LoadMaster's config changed. So Collect also tracks, per metric name, the set of
+// label-value tuples already emitted; a later sample whose values repeat an
+// already-emitted tuple is dropped and logged at Warn, the same way key drift is.
 func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 	snap := p.store.Load()
 	schema := make(map[string]nameSchema)
@@ -77,11 +93,12 @@ func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 				vals[i] = l.Value
 			}
 
-			entry, seen := schema[s.Name]
-			if !seen {
+			entry, seenName := schema[s.Name]
+			if !seenName {
 				entry = nameSchema{
 					keys: keys,
 					desc: prometheus.NewDesc(s.Name, "Kemp LoadMaster metric "+s.Name, keys, nil),
+					seen: make(map[string]struct{}),
 				}
 				schema[s.Name] = entry
 			} else if !slices.Equal(entry.keys, keys) {
@@ -94,11 +111,24 @@ func (p *PromCollector) Collect(ch chan<- prometheus.Metric) {
 				continue
 			}
 
+			sig := strings.Join(vals, "\x00")
+			if _, dup := entry.seen[sig]; dup {
+				logrus.WithFields(logrus.Fields{
+					"metric": s.Name,
+					"system": sys.System,
+					"keys":   keys,
+					"vals":   vals,
+				}).Warn("dropping sample: duplicate label values for a metric name already emitted this scrape")
+				continue
+			}
+			entry.seen[sig] = struct{}{}
+
 			m, err := prometheus.NewConstMetric(entry.desc, prometheus.GaugeValue, s.Value, vals...)
 			if err != nil {
 				logrus.WithFields(logrus.Fields{
 					"metric": s.Name,
 					"system": sys.System,
+					"keys":   keys,
 				}).WithError(err).Warn("dropping sample: could not render as a metric")
 				continue
 			}
