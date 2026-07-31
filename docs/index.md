@@ -6,6 +6,8 @@ process monitors many LoadMasters, polls each on an interval, and serves metrics
 the same immutable, periodically-refreshed snapshot (see
 [ADR 0002](adr/0002-snapshot-collection-model.md)).
 
+Current release: [v0.1.0](https://github.com/fjacquet/kemp_exporter/releases/tag/v0.1.0) — see the [changelog](https://github.com/fjacquet/kemp_exporter/blob/main/CHANGELOG.md).
+
 ## Quick start
 
 ```bash
