@@ -1,0 +1,12 @@
+FROM alpine:3.22
+RUN apk add --no-cache ca-certificates && adduser -D -u 10001 kemp
+# TARGETPLATFORM is required: buildx writes each platform's binary into its own
+# subdirectory. A flat `COPY kemp_exporter` only worked with the retired
+# build-push-action job and silently produces a broken multi-arch image.
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/kemp_exporter /usr/local/bin/kemp_exporter
+COPY config.yaml /etc/kemp_exporter/config.yaml
+USER 10001
+EXPOSE 9447
+ENTRYPOINT ["/usr/local/bin/kemp_exporter"]
+CMD ["--config", "/etc/kemp_exporter/config.yaml"]

@@ -1,0 +1,26 @@
+# Canonical caller for the docs site. Copy to a consumer repo as
+# `.github/workflows/docs.yml`. Builds the MkDocs Material site and deploys it to
+# GitHub Pages via fjacquet/ci. On pull_request the docs still build (validation)
+# but the deploy job self-skips — only a push to main publishes.
+#
+# Pages prerequisite: set the repo's Pages source to "GitHub Actions" (build_type
+# workflow), not a branch.
+name: Docs
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", "mkdocs.yml"]
+  pull_request:
+    paths: ["docs/**", "mkdocs.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  docs:
+    uses: fjacquet/ci/.github/workflows/docs-publish.yml@v1
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

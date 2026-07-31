@@ -1,0 +1,21 @@
+# Canonical caller for the Go CI gate. Copy to a consumer repo as
+# `.github/workflows/ci.yml`. Runs `make ci` + `make sbom` + coverage upload via
+# fjacquet/ci. The consumer keeps the Makefile contract (templates/Makefile.go);
+# this file stays thin — never inline build steps here.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ci:
+    uses: fjacquet/ci/.github/workflows/go-ci.yml@v1
+    permissions:
+      contents: read
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

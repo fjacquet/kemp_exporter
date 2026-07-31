@@ -1,0 +1,24 @@
+# Canonical caller for the Go release. Copy to a consumer repo as
+# `.github/workflows/release.yml`. Triggers on `v*` tags and runs `make release`
+# (GoReleaser) via fjacquet/ci: cross-platform binaries + SBOM + cosign signing +
+# multi-arch GHCR image. The consumer keeps `.goreleaser.yaml` and
+# `Dockerfile.goreleaser`; the workflow provisions cosign/cyclonedx/syft centrally.
+#
+# HOMEBREW_TAP_GITHUB_TOKEN is a cross-repo PAT that lets GoReleaser push a cask to
+# fjacquet/homebrew-tap. It is optional — the cask self-skips when the secret is
+# absent, so the release still succeeds without it.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  release:
+    uses: fjacquet/ci/.github/workflows/go-release.yml@v1
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    secrets:
+      HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

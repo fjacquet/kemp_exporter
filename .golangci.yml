@@ -1,0 +1,35 @@
+version: "2"
+
+linters:
+  enable:
+    - gosec
+    - revive
+    - misspell
+    - unconvert
+  exclusions:
+    rules:
+      # Reading operator-supplied paths is intended behavior: the --config file and
+      # passwordFile/apiKeyFile funnel through the single audited choke point
+      # internal/config/config.go, and the log file path comes from operator config
+      # in internal/logging. The family standard forbids inline //nolint, so the
+      # G304 exclusion is path-scoped here instead.
+      - path: internal/config/config.go
+        linters: [gosec]
+        text: "G304"
+      - path: internal/logging/logging.go
+        linters: [gosec]
+        text: "G304"
+      # internal/kemp/tlsconfig.go sets tls.Config.InsecureSkipVerify from the
+      # per-target, operator-controlled config field (default false, surfaced in
+      # SafeConfig's startup dump and documented in config.yaml as a MITM risk).
+      # gosec's G402 fires on the assignment regardless of whether the value is a
+      # hardcoded `true` or a variable, so it cannot be resolved by restructuring —
+      # the field has to exist for LoadMasters with self-signed certs. Scoped to the
+      # one file that reads it, not disabled repo-wide.
+      - path: internal/kemp/tlsconfig.go
+        linters: [gosec]
+        text: "G402"
+      # Test mocks intentionally write static fixtures to ResponseWriter; test
+      # signatures keep the standard (t *testing.T) param even when unused.
+      - path: _test\.go
+        linters: [gosec, revive]

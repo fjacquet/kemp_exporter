@@ -1,0 +1,20 @@
+---
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    # Wait 7 days after a new version is published before proposing it: a freshly
+    # published package/tag is a common malicious-release vector. Required to clear
+    # semgrep's dependabot-missing-cooldown rule (auto config).
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
