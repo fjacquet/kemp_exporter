@@ -211,19 +211,20 @@ func (c *SystemClient) ensureTransport(ctx context.Context, cmd string, params m
 	// the caller can see *why* detection failed instead of a generic message.
 	var probeErr error
 	if c.json != nil {
-		if err := c.json.Do(ctx, cmd, params, out); err == nil {
+		err := c.json.Do(ctx, cmd, params, out)
+		if err == nil {
 			c.mu.Lock()
 			c.active = c.json
 			c.mu.Unlock()
 			logrus.WithFields(logrus.Fields{"system": c.name, "transport": "json"}).
 				Info("detected LoadMaster API transport")
 			return nil, nil
-		} else if !errors.Is(err, errUnsupported) && !errors.Is(err, errAuth) {
+		}
+		if !errors.Is(err, errUnsupported) && !errors.Is(err, errAuth) {
 			// A transport-level failure is not evidence about firmware support.
 			return nil, err
-		} else {
-			probeErr = err
 		}
+		probeErr = err
 	}
 	if c.xml != nil {
 		c.mu.Lock()

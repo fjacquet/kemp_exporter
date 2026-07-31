@@ -346,7 +346,9 @@ func runOnce(ctx context.Context, loop *kemp.CollectionLoop, store *kemp.Snapsho
 	snap := loop.CollectOnce(ctx)
 	store.Store(snap)
 	if flagDebug {
-		kemp.DumpSamples(os.Stdout, snap)
+		if err := kemp.DumpSamples(os.Stdout, snap); err != nil {
+			return fmt.Errorf("dump samples: %w", err)
+		}
 	}
 
 	var failed []string

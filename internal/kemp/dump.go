@@ -13,7 +13,10 @@ import (
 // This is the live-validation tool: run `--once --debug` against a real appliance
 // and diff the output against docs/metrics.md. It catches silently-absent metrics
 // that kemp_up cannot — a collector reporting OK does not mean every field parsed.
-func DumpSamples(w io.Writer, snap *Snapshot) {
+//
+// Returns the first write error encountered, if any, so a broken output pipe (e.g.
+// stdout closed by a truncating consumer) is reported rather than swallowed.
+func DumpSamples(w io.Writer, snap *Snapshot) error {
 	var lines []string
 	for _, sys := range snap.Systems {
 		for _, s := range sys.Samples {
@@ -22,8 +25,11 @@ func DumpSamples(w io.Writer, snap *Snapshot) {
 	}
 	sort.Strings(lines)
 	for _, l := range lines {
-		fmt.Fprintln(w, l)
+		if _, err := fmt.Fprintln(w, l); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // formatSample renders one sample as name{k="v",...} value, preserving label order.

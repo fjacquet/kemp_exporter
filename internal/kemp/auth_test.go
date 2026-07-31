@@ -66,7 +66,7 @@ func TestObtainViaUnblocksWaitersWhenAttemptPanics(t *testing.T) {
 	leaderDone := make(chan struct{})
 	go func() {
 		defer func() {
-			recover()
+			_ = recover()
 			close(leaderDone)
 		}()
 		_, _, _ = obtainVia(s, noGen, func() (string, error) {

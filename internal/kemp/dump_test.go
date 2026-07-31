@@ -22,7 +22,9 @@ func TestDumpSamplesIsSortedExposition(t *testing.T) {
 	}}}
 
 	var sb strings.Builder
-	DumpSamples(&sb, snap)
+	if err := DumpSamples(&sb, snap); err != nil {
+		t.Fatalf("DumpSamples: %v", err)
+	}
 	lines := strings.Split(strings.TrimSpace(sb.String()), "\n")
 
 	if len(lines) != 3 {
