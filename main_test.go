@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -341,5 +343,57 @@ systems:
 	// just as well, without ever exercising runOnce's failure branch at all.
 	if !strings.Contains(string(out), "collection failed for 1 of 1 system(s)") {
 		t.Fatalf("exit was non-zero but not for the expected reason; output=%s", out)
+	}
+}
+
+// --- Final review, must-fix 13: a slow shutdown made a normal exit non-zero ---
+//
+// run() used to `return srv.Shutdown(shutdownCtx)`. A shutdown that exceeds the
+// 10s budget with connections still open returns context.DeadlineExceeded, so a
+// perfectly ordinary SIGTERM exited non-zero -- which the shipped systemd unit
+// (Restart=on-failure) and Kubernetes both read as a failed termination and act on.
+// The exporter has nothing left to do at that point: the listener is closed, the
+// snapshot is irrelevant, and a lingering connection is not an error the operator
+// can act on. Log it, exit 0.
+func TestShutdownServerReportsSuccessWhenTheGraceBudgetExpires(t *testing.T) {
+	// A request that is still being served when shutdown starts: this is what makes
+	// Shutdown actually wait, and then fail, on the budget. Without a connection in
+	// flight Shutdown returns nil immediately and the test would prove nothing.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	srv := &http.Server{
+		ReadHeaderTimeout: time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			once.Do(func() { close(entered) })
+			<-release
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer close(release)
+
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
+		if err != nil {
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := shutdownServer(ctx, srv); err != nil {
+		t.Fatalf("shutdownServer returned %v; a shutdown that overran its budget must still "+
+			"be a clean exit (systemd Restart=on-failure and Kubernetes both act on a non-zero code)", err)
 	}
 }

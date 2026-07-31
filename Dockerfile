@@ -1,5 +1,8 @@
 # Build stage
-FROM golang:1.26-bookworm AS builder
+# Patch-pinned, per the project's supply-chain constraint and to match go.mod's
+# `go 1.26.5`: a floating 1.26 tag silently changes the toolchain under a
+# reproducible build.
+FROM golang:1.26.5-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

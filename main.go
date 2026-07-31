@@ -331,7 +331,24 @@ func run(_ *cobra.Command, _ []string) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	shutdownTelemetry(shutdownCtx, otlp)
-	return srv.Shutdown(shutdownCtx)
+	return shutdownServer(shutdownCtx, srv)
+}
+
+// shutdownServer drains the HTTP server within ctx's budget and reports SUCCESS
+// even when the budget expires.
+//
+// Returning srv.Shutdown's error (as this did) turned an ordinary SIGTERM into a
+// non-zero exit whenever a connection outlived the 10s grace period: systemd
+// (Restart=on-failure, in the shipped unit) and Kubernetes both read that as a
+// failed termination and act on it. By this point the process has nothing left to
+// do and nothing left to lose -- the listener is closed, the collection loop is
+// cancelled, telemetry is already flushed -- and a lingering connection is not
+// something an operator can act on. It is worth a log line, not an exit code.
+func shutdownServer(ctx context.Context, srv *http.Server) error {
+	if err := srv.Shutdown(ctx); err != nil {
+		logrus.WithError(err).Warn("http server did not drain within the shutdown budget; exiting anyway")
+	}
+	return nil
 }
 
 // runOnce runs a single collection cycle, optionally dumps every sample, and
