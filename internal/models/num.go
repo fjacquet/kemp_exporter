@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -35,6 +36,16 @@ func (n *Num) parse(raw string) {
 	}
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil {
+		return
+	}
+	// strconv.ParseFloat accepts "NaN", "Inf", "+Inf" and "-Infinity", which would
+	// otherwise set OK=true and carry a non-finite value through the
+	// absent-never-zero gate into a real sample. Prometheus renders NaN, and every
+	// alert comparison against a NaN evaluates false -- a NaN
+	// kemp_memory_used_percent makes `> 90` permanently untrue -- so a non-finite
+	// value is the same silent monitoring loss a fabricated 0 would be, only harder
+	// to spot because the series exists. It is not a reading: treat it as absent.
+	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return
 	}
 	n.Val, n.OK = v, true

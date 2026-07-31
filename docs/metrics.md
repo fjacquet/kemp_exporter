@@ -22,6 +22,20 @@ for), independent of the wire encoding.
 `kemp_exporter_build_info` carries `system`; the `_status` metrics carry the base
 set for their family plus `status`.
 
+Two data-hygiene rules apply to every row below, both enforced at a single choke
+point rather than per metric:
+
+- **Absent, never zero.** A field that did not parse produces no sample at all
+  (`addSample`). A non-finite value — `NaN`, `Inf`, and the other spellings
+  `strconv.ParseFloat` accepts — counts as "did not parse": Prometheus renders NaN
+  happily and every alert comparison against it is silently false, so a NaN series
+  is a worse blind spot than a missing one.
+- **Label values are valid UTF-8.** Appliance-supplied label values (service name,
+  cpu/interface id, status, addresses) pass through the builders in `metrics.go`,
+  which replace any invalid UTF-8 byte with U+FFFD. The Prometheus and OTLP readers
+  therefore see identical data; before this, the OTLP protobuf marshal rejected an
+  invalid byte and dropped the entire export batch.
+
 `Status` is **confirmed** or **unconfirmed** — see
 [What "confirmed" means here](#what-confirmed-means-here) and
 [Live validation](#live-validation-outstanding) below.

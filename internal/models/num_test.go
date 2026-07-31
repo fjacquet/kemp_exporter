@@ -84,3 +84,43 @@ func TestNumAbsentField(t *testing.T) {
 		t.Fatal("omitted field reported OK; want absent")
 	}
 }
+
+// --- Final review, must-fix 1: Num.parse accepted NaN and Inf ---
+//
+// strconv.ParseFloat accepts "NaN", "Inf", "+Inf", "-Infinity" and friends, so a
+// non-finite payload field used to set OK=true and walk straight through the
+// absent-never-zero gate into a sample. Prometheus renders NaN, and EVERY alert
+// comparison against a NaN is silently false -- a NaN kemp_memory_used_percent
+// makes `> 90` permanently untrue, which is the same silent monitoring loss the
+// absent-never-zero rule exists to prevent, only harder to see because the series
+// is present. A non-finite value is not a reading; it is absent.
+func TestNumRejectsNonFinite(t *testing.T) {
+	for _, raw := range []string{"NaN", "nan", "Inf", "inf", "+Inf", "-Inf", "Infinity", "-Infinity"} {
+		t.Run(raw, func(t *testing.T) {
+			var n Num
+			n.parse(raw)
+			if _, ok := n.Get(); ok {
+				t.Fatalf("parse(%q) reported the value present (%v); a non-finite value must be absent, "+
+					"or it reaches Prometheus and silently falsifies every alert comparison", raw, n.Val)
+			}
+		})
+	}
+}
+
+// The counterpart: ordinary finite values, including negatives and exponents, must
+// still parse. The guard must reject non-finite input, not tighten parsing.
+func TestNumAcceptsFiniteValues(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want float64
+	}{{"0", 0}, {"-1", -1}, {"1e10", 1e10}, {"3.5", 3.5}, {" 42 ", 42}} {
+		t.Run(tc.raw, func(t *testing.T) {
+			var n Num
+			n.parse(tc.raw)
+			v, ok := n.Get()
+			if !ok || v != tc.want {
+				t.Fatalf("parse(%q) = (%v, %v), want (%v, true)", tc.raw, v, ok, tc.want)
+			}
+		})
+	}
+}
