@@ -221,6 +221,96 @@ systems:
 	}
 }
 
+// server.uri is handed straight to http.ServeMux, which PANICS -- from deep
+// inside net/http, naming no config field -- on a pattern that conflicts with
+// one the exporter already registers ("/health", "/") or that its pattern
+// parser rejects (a '{' wildcard segment, or whitespace, which ServeMux reads
+// as a method prefix). Load must reject all of these itself, naming the field.
+func TestLoadRejectsUnusableServerURI(t *testing.T) {
+	for _, uri := range []string{"/health", "/met{rics", "/a b", "/a\tb", "/metrics/{id}", "/met}rics"} {
+		t.Run(uri, func(t *testing.T) {
+			path := writeConfig(t, `
+server:
+  uri: "`+strings.ReplaceAll(strings.ReplaceAll(uri, "\\", "\\\\"), "\t", "\\t")+`"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("Load succeeded with server.uri = %q, which panics http.ServeMux; want error", uri)
+			}
+			if !strings.Contains(err.Error(), "server.uri") {
+				t.Errorf("error = %q, want it to name the field (server.uri)", err.Error())
+			}
+		})
+	}
+}
+
+// The counterpart to the rejections above: a plain nested path is legal and must
+// keep loading, so the new validation cannot be satisfied by rejecting everything.
+func TestLoadAcceptsNestedServerURI(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  uri: "/kemp/metrics"
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load rejected a legal nested server.uri: %v", err)
+	}
+	if cfg.Server.URI != "/kemp/metrics" {
+		t.Errorf("Server.URI = %q, want \"/kemp/metrics\"", cfg.Server.URI)
+	}
+}
+
+// Config.Systems[].Name becomes the `system` label on every metric this exporter
+// emits. Two systems sharing a name -- including two that both omitted `name`,
+// which was not an error -- produce byte-identical label tuples, and both readers'
+// first-wins dedup then drops the second appliance's metrics entirely. /metrics
+// and /health stay green while an entire LoadMaster is unmonitored, so this has to
+// fail at load time.
+func TestLoadRejectsMissingSystemName(t *testing.T) {
+	path := writeConfig(t, `
+systems:
+  - host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a system that has no name; want error")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("error = %q, want it to name the field (name)", err.Error())
+	}
+}
+
+func TestLoadRejectsDuplicateSystemNames(t *testing.T) {
+	path := writeConfig(t, `
+systems:
+  - name: lm-01
+    host: 10.0.0.1
+    apiKey: secret
+  - name: lm-01
+    host: 10.0.0.2
+    apiKey: secret2
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with two systems sharing a name; want error")
+	}
+	if !strings.Contains(err.Error(), "name") || !strings.Contains(err.Error(), "lm-01") {
+		t.Errorf("error = %q, want it to name the field (name) and the offending value (lm-01)", err.Error())
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("error = %q leaks a credential", err.Error())
+	}
+}
+
 func TestLoadRejectsNegativeOTelInterval(t *testing.T) {
 	path := writeConfig(t, `
 otel:

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v2"
 )
@@ -99,6 +100,55 @@ func readSecretFile(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+// reservedURIs are the mux patterns the exporter registers for itself. A
+// server.uri equal to one of them makes http.ServeMux panic on the second
+// registration ("pattern X conflicts with pattern X"), taking the process down at
+// startup. Kept next to the mux wiring's own list by this comment rather than by
+// import, because main owns the mux and config must not depend on main.
+var reservedURIs = map[string]string{
+	"/":       "the landing page",
+	"/health": "the health endpoint",
+}
+
+// validateServerURI rejects every server.uri value that http.ServeMux would reject
+// with a panic rather than an error.
+//
+// This has to ANTICIPATE the panic, not catch it: the panic happens inside
+// mux.Handle at server-start time, from deep in net/http's pattern parser, naming
+// no config field. Every other misconfiguration in this file fails loudly at load
+// time naming the field, and server.uri gets the same treatment.
+//
+// The three panic classes, verified against net/http's pattern parser:
+//
+//   - a pattern the exporter already registers (see reservedURIs) -- a conflict
+//     panic; "/health" is a plausible operator choice, not just a typo;
+//   - a pattern containing '{' or '}' -- ServeMux reads those as wildcard segment
+//     delimiters and panics on anything it cannot parse as one ("/met{rics"). A
+//     well-formed wildcard ("/metrics/{id}") does not panic but is rejected too: a
+//     metrics endpoint has no use for a path variable, and accepting one would
+//     silently route requests this exporter cannot serve;
+//   - a pattern containing a space or tab -- ServeMux splits on whitespace to find
+//     an optional METHOD prefix, so "/a b" panics with `invalid method "/a"`.
+//     Rejecting all whitespace and control characters covers this and keeps the
+//     value safe to log and to render into the landing page.
+func validateServerURI(uri string) error {
+	if !strings.HasPrefix(uri, "/") {
+		return fmt.Errorf("server.uri: must start with '/', got %q", uri)
+	}
+	if what, ok := reservedURIs[uri]; ok {
+		return fmt.Errorf("server.uri: %q is reserved for %s; pick another path", uri, what)
+	}
+	if strings.ContainsAny(uri, "{}") {
+		return fmt.Errorf("server.uri: must not contain '{' or '}' (http.ServeMux reads them as wildcard segments), got %q", uri)
+	}
+	for _, r := range uri {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("server.uri: must not contain whitespace or control characters (http.ServeMux reads a leading whitespace-separated token as an HTTP method), got %q", uri)
+		}
+	}
+	return nil
+}
+
 // Load reads, interpolates ${ENV} references, applies defaults, and validates.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
@@ -109,6 +159,10 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	// seenNames maps a resolved system name to the index that first claimed it, so a
+	// duplicate can name both offenders.
+	seenNames := make(map[string]int, len(cfg.Systems))
 
 	for i := range cfg.Systems {
 		s := &cfg.Systems[i]
@@ -146,6 +200,22 @@ func Load(path string) (*Config, error) {
 		if err := s.InsecureSkipVerify.Resolve(interpolate); err != nil {
 			return nil, fmt.Errorf("system %s insecureSkipVerify: %w", s.Name, err)
 		}
+		// Name is not cosmetic: it becomes the `system` label on every metric this
+		// exporter emits (see the kemp package's label builders). Two systems that
+		// resolve to the same name -- including two that both omitted `name`, which
+		// used to load without complaint -- produce byte-identical label tuples for
+		// every metric, and both readers' first-wins dedup then drops the second
+		// appliance's samples in their entirety. /metrics and /health both stay green
+		// while a whole LoadMaster goes unmonitored, so this must fail here instead.
+		// The error quotes the offending name only, never any other field of System:
+		// the struct holds credentials.
+		if s.Name == "" {
+			return nil, fmt.Errorf("systems[%d]: name is required (it becomes the `system` label on every metric)", i)
+		}
+		if first, dup := seenNames[s.Name]; dup {
+			return nil, fmt.Errorf("systems[%d]: name %q duplicates systems[%d]; every system needs a unique name (it becomes the `system` label on every metric)", i, s.Name, first)
+		}
+		seenNames[s.Name] = i
 		if s.Host == "" {
 			return nil, fmt.Errorf("system %s: host is required", s.Name)
 		}
@@ -160,16 +230,8 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.URI == "" {
 		cfg.Server.URI = "/metrics"
 	}
-	// http.ServeMux itself would catch both of these -- but only as a panic at
-	// server-start time, deep inside net/http's pattern parser, with no mention
-	// of which config field caused it. Every other misconfiguration in this file
-	// fails loudly here instead, naming the field; server.uri gets the same
-	// treatment.
-	if !strings.HasPrefix(cfg.Server.URI, "/") {
-		return nil, fmt.Errorf("server.uri: must start with '/', got %q", cfg.Server.URI)
-	}
-	if cfg.Server.URI == "/" {
-		return nil, fmt.Errorf(`server.uri: must not be exactly "/" (it would collide with the landing page)`)
+	if err := validateServerURI(cfg.Server.URI); err != nil {
+		return nil, err
 	}
 	// A negative value here would otherwise reach time.NewTicker (Collection.Interval,
 	// in the collection loop's Run) or bypass the ==0 defaulting below entirely

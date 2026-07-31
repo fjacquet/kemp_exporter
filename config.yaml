@@ -16,7 +16,9 @@ otel:
 systems:
   # Single-target quickstart: set KEMP1_HOSTNAME and KEMP1_APIKEY in the
   # environment (or a .env file). config.yaml is the source of truth — for
-  # multiple LoadMasters add one entry per appliance.
+  # multiple LoadMasters add one entry per appliance. Every entry needs a
+  # non-empty, unique `name`: it becomes the `system` label on every metric, and
+  # two appliances sharing one would collide into a single set of series.
   - name: lm-prod-01
     host: "${KEMP1_HOSTNAME}"
     # XML transport: a static API key, ideally scoped read-only.
