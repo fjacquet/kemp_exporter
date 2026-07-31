@@ -43,7 +43,9 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./deploy/prometheus:/etc/prometheus/rules:ro
+      # kemp.rules.yml only, by name: kemp.rules.unconfirmed.yml in the same
+      # directory is expected to fire until hardware confirms its wire contract.
+      - ./deploy/prometheus/kemp.rules.yml:/etc/prometheus/rules/kemp.rules.yml:ro
     depends_on:
       - kemp_exporter
     restart: unless-stopped

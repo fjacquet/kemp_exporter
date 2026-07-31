@@ -1,0 +1,38 @@
+---
+# Rules that are EXPECTED TO FIRE until a real LoadMaster confirms the wire
+# contract they depend on. Load them only once you have that confirmation.
+#
+# They are deliberately NOT loaded by the demo stacks (docker-compose.yml and
+# docker-compose.ghcr.yml mount deploy/prometheus/kemp.rules.yml by name, not the
+# whole directory), because a rule that fires permanently against the project's
+# own modelled response teaches operators to mute the `severity: warning` route —
+# which would silently disable most of kemp.rules.yml along with it.
+#
+# KempRealServerMetricMissing: the exporter emits kemp_real_server_up only when a
+# real-server row carries a Status field. NO field name for it has ever been
+# observed on hardware — models.RealServer guesses `Status` by analogy with the
+# virtual-service side, and no mainline stats fixture carries one. Against the
+# response shape this project actually models, kemp_real_server_up is therefore
+# never emitted at all and this rule is permanently true for every reachable
+# appliance. That is a statement about the project's uncertainty, not about the
+# appliance.
+#
+# To close this: run `kemp_exporter --config real.yaml --once --debug --trace
+# 2>trace.log` against a real appliance, find the real-server status element in
+# trace.log, fix models.RealServer's tag and the stats fixtures to match, then
+# move this rule into kemp.rules.yml.
+groups:
+  - name: kemp-unconfirmed
+    rules:
+      # NOTE: this also fires on an appliance with zero real servers configured —
+      # a legitimate configuration, not a fault. If this rule is firing on an
+      # otherwise-healthy, reachable appliance, check whether it simply has no
+      # real servers defined before treating it as a parse failure.
+      - alert: KempRealServerMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_real_server_up
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Real-server metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but no kemp_real_server_up series exist for it, so KempRealServerDown cannot fire. Expected on an appliance configured with zero real servers — and expected unconditionally until the real-server status field name is confirmed on hardware."

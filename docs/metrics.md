@@ -114,6 +114,19 @@ both derive from `listvs`'s `Status` field (via `statusToUp` in
 `internal/kemp/derivations.go`), and the `listvs` `Status` field name is itself
 inferred rather than documented.
 
+Two consequences of `statusToUp`'s mapping are worth knowing before writing
+alerts on `kemp_*_up`, and both are handled in `deploy/prometheus/kemp.rules.yml`
+rather than in the metric:
+
+- `Disabled` maps to `0`. `kemp_*_up` means "is this serving traffic", which is
+  what dashboards and SLOs want — but it also means an administratively drained
+  backend reads as down. The shipped `KempVirtualServiceDown`/`KempRealServerDown`
+  rules exclude objects whose `status` label matches `disabled` case-insensitively.
+- A status string outside the mapping's vocabulary yields **no** `_up` sample at
+  all (absent, never zero — an unknown status is not evidence of failure). The
+  shipped `Kemp*StatusUnrecognised` rules detect exactly that state, per object,
+  so the resulting blind spot is visible instead of silent.
+
 ## Real servers
 
 `vs_address`/`vs_port` let a dashboard group real servers under their parent
@@ -124,13 +137,22 @@ and `kemp_real_server_status`) is inferred, not documented.
 |---|---|---|---|
 | `kemp_real_server_up` | gauge | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
 | `kemp_real_server_status` | gauge (info, value always `1`) | `system`, `address`, `port`, `vs_address`, `vs_port`, `status` | unconfirmed |
-| `kemp_real_server_active_connections` | gauge | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_connections_per_second` | gauge | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_connections_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_packets_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_bytes_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_bytes_read_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
-| `kemp_real_server_bytes_written_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | confirmed |
+| `kemp_real_server_active_connections` | gauge | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_connections_per_second` | gauge | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_connections_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_packets_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_bytes_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_bytes_read_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+| `kemp_real_server_bytes_written_total` | counter | `system`, `address`, `port`, `vs_address`, `vs_port` | unconfirmed |
+
+Every real-server row is **unconfirmed**, including the numeric ones. The `Rs`
+element uses its own, terser vocabulary — `Addr`, `Port`, `Conns`, `Pkts`,
+`Bytes` (see `internal/models/statistics.go`) — which is *not* the
+`VSAddress`/`VSPort`/`TotalConns`/`TotalPkts`/`TotalBytes` vocabulary the
+"confirmed" definition below covers. Short generic names of that kind are the
+most likely to be an archived client's paraphrase rather than the wire name, so
+they are marked by the same rule as everything else here: no second independent
+source, no confirmation.
 
 ## What "confirmed" means here
 
@@ -148,7 +170,8 @@ second source, and is exercised only against a hand-built fixture — never agai
 a real appliance response. This covers: the `stats` response's `CPU`, `Memory`,
 `Network`, and `TPS` element paths; the `listvs` `NickName`/`Status` field names;
 the entire JSON envelope shape; the JSON login path; the token header; and the
-real-server `Status` field.
+whole `Rs` element vocabulary — `Addr`, `Port`, `Conns`, `Pkts`, `Bytes` and
+`Status` — which no second source corroborates.
 
 No LoadMaster appliance was available when this exporter was built. Every
 **unconfirmed** row above is inferred from the Kemp API documentation and the

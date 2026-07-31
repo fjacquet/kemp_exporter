@@ -21,6 +21,24 @@
 # The one exception is KempExporterNotReporting, which uses absent(kemp_up)
 # directly: kemp_up itself has no per-system correlate to join against — it IS
 # the correlate every other companion joins on.
+#
+# PER-OBJECT companions (KempVirtualServiceStatusUnrecognised,
+# KempRealServerStatusUnrecognised) join on the FULL identity label set instead,
+# for a blind spot the per-system companions structurally cannot see. The
+# exporter maps a status string onto _up through a fixed vocabulary; a string
+# outside it yields NO _up sample (an unknown status is not evidence of failure,
+# and a fabricated 0 would page for an outage that may not exist) while _status
+# is still emitted. Joining on(system) is then satisfied by any sibling object
+# with a recognised status, so a genuinely down object can disappear from every
+# value alert with nothing firing. "_status present, _up absent for the SAME
+# object" is exactly that condition, and nothing else produces it.
+#
+# DRAINED BACKENDS: the exporter maps "Disabled" to _up == 0, deliberately —
+# kemp_*_up means "is this serving traffic", which is what dashboards and SLOs
+# want. That would page at critical severity for a planned maintenance drain, so
+# the two Down alerts exclude objects whose status label says disabled. The match
+# is case-insensitive because `status` carries the appliance's raw, un-normalised
+# string; the exporter lowercases only for its own internal mapping.
 groups:
   - name: kemp
     rules:
@@ -44,11 +62,30 @@ groups:
 
       - alert: KempVirtualServiceDown
         expr: kemp_virtual_service_up == 0
+              unless on(system,name,address,port,protocol)
+              kemp_virtual_service_status{status=~"(?i)disabled"}
         for: 5m
         labels:
           severity: critical
         annotations:
           summary: "Virtual service {{ $labels.name }} ({{ $labels.address }}:{{ $labels.port }}) is down"
+          description: "The LoadMaster reports this service out of rotation for a reason other than an administrative disable."
+
+      # Fires for exactly one condition: this object has a status series but no
+      # _up series, which happens only when the appliance reported a status
+      # string outside the exporter's mapping vocabulary. That object is invisible
+      # to KempVirtualServiceDown — it cannot fire on a series that does not
+      # exist — and the per-system companion above cannot see it either, because
+      # any sibling service with a recognised status satisfies its on(system) join.
+      - alert: KempVirtualServiceStatusUnrecognised
+        expr: kemp_virtual_service_status
+              unless on(system,name,address,port,protocol) kemp_virtual_service_up
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unrecognised status {{ $labels.status }} for virtual service {{ $labels.name }} ({{ $labels.address }}:{{ $labels.port }}) on {{ $labels.system }}"
+          description: "The exporter could not map this status onto kemp_virtual_service_up, so this service is invisible to KempVirtualServiceDown. Capture the raw string the appliance reported (`kemp_exporter --once --debug --trace 2>trace.log`, per docs/metrics.md) and extend the exporter's statusToUp vocabulary to cover it."
 
       - alert: KempVirtualServiceMetricMissing
         expr: kemp_up == 1 unless on(system) kemp_virtual_service_up
@@ -63,7 +100,10 @@ groups:
       # passed through unmodified — the exporter lowercases only for its internal
       # up/down mapping (kemp_virtual_service_up), never for this label's value.
       # This rule intentionally matches the literal "Sick" (capital S), which is
-      # what every appliance observed so far reports. An appliance that instead
+      # what the vendor documentation and the archived giantswarm/kemp-client
+      # fixtures use — UNVERIFIED against hardware, like every other field name,
+      # status string and unit in this exporter (see docs/metrics.md). No
+      # appliance has been observed. An appliance that instead
       # reports "sick" (lowercase) would silently never trip this alert — if this
       # rule looks like it should have fired but hasn't, check the actual label
       # value with `kemp_virtual_service_status{system="..."}` before assuming the
@@ -95,24 +135,26 @@ groups:
 
       - alert: KempRealServerDown
         expr: kemp_real_server_up == 0
+              unless on(system,address,port,vs_address,vs_port)
+              kemp_real_server_status{status=~"(?i)disabled"}
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Real server {{ $labels.address }}:{{ $labels.port }} is down"
+          description: "The LoadMaster reports this backend out of rotation for a reason other than an administrative disable."
 
-      # NOTE: this also fires on an appliance with zero real servers configured —
-      # a legitimate configuration, not a fault. If this rule is firing on an
-      # otherwise-healthy, reachable appliance, check whether it simply has no
-      # real servers defined before treating it as a parse failure.
-      - alert: KempRealServerMetricMissing
-        expr: kemp_up == 1 unless on(system) kemp_real_server_up
+      # The real-server counterpart of KempVirtualServiceStatusUnrecognised; see
+      # that rule and the PER-OBJECT companions note at the top of this file.
+      - alert: KempRealServerStatusUnrecognised
+        expr: kemp_real_server_status
+              unless on(system,address,port,vs_address,vs_port) kemp_real_server_up
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Real-server metrics missing for a reachable LoadMaster {{ $labels.system }}"
-          description: "The appliance is up but no kemp_real_server_up series exist for it, so KempRealServerDown cannot fire. This is also expected on an appliance configured with zero real servers."
+          summary: "Unrecognised status {{ $labels.status }} for real server {{ $labels.address }}:{{ $labels.port }} on {{ $labels.system }}"
+          description: "The exporter could not map this status onto kemp_real_server_up, so this backend is invisible to KempRealServerDown. Capture the raw string the appliance reported (`kemp_exporter --once --debug --trace 2>trace.log`, per docs/metrics.md) and extend the exporter's statusToUp vocabulary to cover it."
 
       - alert: KempMemoryLow
         expr: kemp_memory_used_percent > 90

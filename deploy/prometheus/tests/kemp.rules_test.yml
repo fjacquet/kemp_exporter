@@ -1,0 +1,95 @@
+---
+# promtool unit tests for kemp.rules.yml. Run with:
+#
+#   promtool test rules deploy/prometheus/tests/kemp.rules_test.yml
+#
+# They pin the two behaviours that are easy to regress silently: a drained
+# (Disabled) object must not page, and an object whose status string the exporter
+# could not map must still raise a per-object blind-spot alert even though the
+# per-system companion is satisfied by its siblings.
+rule_files:
+  - ../kemp.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'kemp_up{system="lm-01"}'
+        values: "1+0x30"
+      # drained backend: up == 0 with status Disabled -> must NOT page
+      - series: 'kemp_virtual_service_up{system="lm-01",name="drained",address="10.0.0.10",port="443",protocol="tcp"}'
+        values: "0+0x30"
+      - series: 'kemp_virtual_service_status{system="lm-01",name="drained",address="10.0.0.10",port="443",protocol="tcp",status="Disabled"}'
+        values: "1+0x30"
+      # genuinely down service -> must page
+      - series: 'kemp_virtual_service_up{system="lm-01",name="broken",address="10.0.0.11",port="443",protocol="tcp"}'
+        values: "0+0x30"
+      - series: 'kemp_virtual_service_status{system="lm-01",name="broken",address="10.0.0.11",port="443",protocol="tcp",status="Down"}'
+        values: "1+0x30"
+      # unrecognised status: _status present, NO _up series for this object
+      - series: 'kemp_virtual_service_status{system="lm-01",name="weird",address="10.0.0.12",port="443",protocol="tcp",status="Quiesced"}'
+        values: "1+0x30"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: KempVirtualServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              system: lm-01
+              name: broken
+              address: 10.0.0.11
+              port: "443"
+              protocol: tcp
+            exp_annotations:
+              summary: "Virtual service broken (10.0.0.11:443) is down"
+              description: "The LoadMaster reports this service out of rotation for a reason other than an administrative disable."
+      - eval_time: 15m
+        alertname: KempVirtualServiceStatusUnrecognised
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              system: lm-01
+              name: weird
+              address: 10.0.0.12
+              port: "443"
+              protocol: tcp
+              status: Quiesced
+            exp_annotations:
+              summary: "Unrecognised status Quiesced for virtual service weird (10.0.0.12:443) on lm-01"
+              description: "The exporter could not map this status onto kemp_virtual_service_up, so this service is invisible to KempVirtualServiceDown. Capture the raw string the appliance reported (`kemp_exporter --once --debug --trace 2>trace.log`, per docs/metrics.md) and extend the exporter's statusToUp vocabulary to cover it."
+      # the per-system companion is satisfied by the siblings -- which is exactly
+      # why the per-object rule above had to exist
+      - eval_time: 15m
+        alertname: KempVirtualServiceMetricMissing
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'kemp_up{system="lm-01"}'
+        values: "1+0x30"
+      - series: 'kemp_real_server_up{system="lm-01",address="192.168.1.20",port="8443",vs_address="10.0.0.10",vs_port="443"}'
+        values: "0+0x30"
+      - series: 'kemp_real_server_status{system="lm-01",address="192.168.1.20",port="8443",vs_address="10.0.0.10",vs_port="443",status="disabled"}'
+        values: "1+0x30"
+      - series: 'kemp_real_server_status{system="lm-01",address="192.168.1.21",port="8443",vs_address="10.0.0.10",vs_port="443",status="Bogus"}'
+        values: "1+0x30"
+    alert_rule_test:
+      # lowercase "disabled" must also suppress the page
+      - eval_time: 15m
+        alertname: KempRealServerDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: KempRealServerStatusUnrecognised
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              system: lm-01
+              address: 192.168.1.21
+              port: "8443"
+              vs_address: 10.0.0.10
+              vs_port: "443"
+              status: Bogus
+            exp_annotations:
+              summary: "Unrecognised status Bogus for real server 192.168.1.21:8443 on lm-01"
+              description: "The exporter could not map this status onto kemp_real_server_up, so this backend is invisible to KempRealServerDown. Capture the raw string the appliance reported (`kemp_exporter --once --debug --trace 2>trace.log`, per docs/metrics.md) and extend the exporter's statusToUp vocabulary to cover it."
