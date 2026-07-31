@@ -10,6 +10,8 @@ section rather than letting it accumulate indefinitely.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-31
+
 ### Added
 
 - Initial implementation: dual-transport (XML/JSON) collection with runtime
