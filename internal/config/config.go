@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v2"
 )
@@ -211,6 +212,17 @@ func Load(path string) (*Config, error) {
 		// the struct holds credentials.
 		if s.Name == "" {
 			return nil, fmt.Errorf("systems[%d]: name is required (it becomes the `system` label on every metric)", i)
+		}
+		// The uniqueness check below compares raw names, but the `system` label is the
+		// name with invalid UTF-8 replaced by U+FFFD (internal/kemp's cleanValue). Two
+		// names differing only in their invalid bytes would pass as distinct here and
+		// collapse to one label value -- reinstating the very collision this block
+		// exists to prevent. Rejecting invalid UTF-8 keeps the two comparisons
+		// equivalent. Replacement is right for an appliance-reported service name,
+		// whose numbers an operator still needs; an operator-authored config name is
+		// different -- a bad byte there is a config error worth surfacing at load time.
+		if !utf8.ValidString(s.Name) {
+			return nil, fmt.Errorf("systems[%d]: name is not valid UTF-8 (it becomes the `system` label on every metric, where invalid bytes would be replaced and could collide with another system)", i)
 		}
 		if first, dup := seenNames[s.Name]; dup {
 			return nil, fmt.Errorf("systems[%d]: name %q duplicates systems[%d]; every system needs a unique name (it becomes the `system` label on every metric)", i, s.Name, first)

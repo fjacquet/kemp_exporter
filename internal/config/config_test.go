@@ -311,6 +311,37 @@ systems:
 	}
 }
 
+// The uniqueness check above compares raw names, but the `system` label carries the
+// name after invalid UTF-8 is replaced with U+FFFD (internal/kemp's cleanValue).
+// Two names differing only in their invalid bytes are therefore distinct here and
+// identical as labels -- which reinstates exactly the collision the uniqueness check
+// exists to prevent. Rejecting invalid UTF-8 outright keeps the two comparisons
+// equivalent: unlike an appliance-reported service name, an operator-authored config
+// name with a bad byte is a config error we can surface at load time rather than
+// data we would lose by refusing.
+func TestLoadRejectsInvalidUTF8SystemName(t *testing.T) {
+	// The invalid byte arrives through ${ENV} interpolation, not the YAML literal:
+	// the YAML parser rejects a raw invalid byte in the document itself, so env
+	// substitution is the route by which one actually reaches the `system` label.
+	t.Setenv("KEMP_BAD_NAME", "lm-\x80")
+	path := writeConfig(t, `
+systems:
+  - name: ${KEMP_BAD_NAME}
+    host: 10.0.0.1
+    apiKey: secret
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load succeeded with a system name containing invalid UTF-8; want error")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Errorf("error = %q, want it to name the field (name)", err.Error())
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("error = %q leaks a credential", err.Error())
+	}
+}
+
 func TestLoadRejectsNegativeOTelInterval(t *testing.T) {
 	path := writeConfig(t, `
 otel:

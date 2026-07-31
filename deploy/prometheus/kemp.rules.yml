@@ -37,8 +37,12 @@
 # kemp_*_up means "is this serving traffic", which is what dashboards and SLOs
 # want. That would page at critical severity for a planned maintenance drain, so
 # the two Down alerts exclude objects whose status label says disabled. The match
-# is case-insensitive because `status` carries the appliance's raw, un-normalised
-# string; the exporter lowercases only for its own internal mapping.
+# is case-insensitive AND tolerates surrounding whitespace because `status` carries
+# the appliance's raw, un-normalised string, while the exporter's own mapping
+# lowercases and trims before deciding _up. Anything the exporter treats as
+# "disabled" must therefore be excluded here too, or a planned drain pages at
+# critical severity. The whitespace class is ASCII; a status padded with a
+# non-ASCII space (U+00A0) would still page, which no observed appliance emits.
 groups:
   - name: kemp
     rules:
@@ -63,7 +67,7 @@ groups:
       - alert: KempVirtualServiceDown
         expr: kemp_virtual_service_up == 0
               unless on(system,name,address,port,protocol)
-              kemp_virtual_service_status{status=~"(?i)disabled"}
+              kemp_virtual_service_status{status=~"(?i)[[:space:]]*disabled[[:space:]]*"}
         for: 5m
         labels:
           severity: critical
@@ -136,7 +140,7 @@ groups:
       - alert: KempRealServerDown
         expr: kemp_real_server_up == 0
               unless on(system,address,port,vs_address,vs_port)
-              kemp_real_server_status{status=~"(?i)disabled"}
+              kemp_real_server_status{status=~"(?i)[[:space:]]*disabled[[:space:]]*"}
         for: 5m
         labels:
           severity: warning

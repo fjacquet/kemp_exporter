@@ -30,6 +30,13 @@ tests:
       # unrecognised status: _status present, NO _up series for this object
       - series: 'kemp_virtual_service_status{system="lm-01",name="weird",address="10.0.0.12",port="443",protocol="tcp",status="Quiesced"}'
         values: "1+0x30"
+      # drained backend whose status string carries surrounding whitespace. The
+      # exporter trims before mapping, so this is _up == 0 exactly like "Disabled";
+      # the alert's exclusion must trim too or a planned drain pages at critical.
+      - series: 'kemp_virtual_service_up{system="lm-01",name="padded",address="10.0.0.13",port="443",protocol="tcp"}'
+        values: "0+0x30"
+      - series: 'kemp_virtual_service_status{system="lm-01",name="padded",address="10.0.0.13",port="443",protocol="tcp",status=" Disabled "}'
+        values: "1+0x30"
     alert_rule_test:
       - eval_time: 15m
         alertname: KempVirtualServiceDown
