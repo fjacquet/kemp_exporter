@@ -156,8 +156,71 @@ func TestJSONLoginDecodesRegardlessOfContentType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v (login response Content-Type must not affect token decoding)", err)
 	}
+}
+
+// TestJSONLoginNonJSONBodyAt200IsUnsupported covers the mirror image of the
+// content-type fix above: a login response that fails to parse as JSON at all
+// (not merely mislabeled) must still be treated as "this firmware doesn't
+// speak JSON" -- the same signal a 404 on /access/login gives -- rather than
+// a hard failure that stops Task 7 from ever falling back to XML. The XML
+// transport's own login-equivalent shares the same /access/<cmd> namespace,
+// so a JSON-less firmware answering POST /access/login with an XML body at
+// HTTP 200 is a real, not hypothetical, shape.
+func TestJSONLoginNonJSONBodyAt200IsUnsupported(t *testing.T) {
+	var cmdHits int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/access/login" {
+			w.Header().Set("Content-Type", "text/xml")
+			writeBytes(w, []byte(`<Response stat="200"><Success><Data><Token>ignored</Token></Data></Success></Response>`))
+			return
+		}
+		atomic.AddInt32(&cmdHits, 1)
+	}))
+	defer srv.Close()
+
+	tr, err := newJSONTransport(jsonSystem(t, srv), false)
+	if err != nil {
+		t.Fatalf("newJSONTransport: %v", err)
+	}
+	var st models.Statistics
+	err = tr.Do(context.Background(), "stats", nil, &st)
+	if err == nil {
+		t.Fatal("Do succeeded against an XML-at-200 login body; want error")
+	}
+	if !isUnsupported(err) {
+		t.Errorf("error = %v, want errors.Is(err, errUnsupported) -- an XML login body at HTTP 200 means this firmware doesn't speak JSON, the same as a 404 would", err)
+	}
+	if got := atomic.LoadInt32(&cmdHits); got != 0 {
+		t.Errorf("command endpoint hit %d times; login should have failed before any command call", got)
+	}
+}
+
+// TestJSONLoginTruncatedJSONBodyIsHardError is the other direction: a login
+// body that clearly starts as JSON but is truncated/corrupt must NOT be
+// classified as errUnsupported. That shape means the appliance does speak
+// JSON but returned a broken response -- a real fault that Task 7 must
+// propagate, not silently mask by downgrading to XML.
+func TestJSONLoginTruncatedJSONBodyIsHardError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/access/login" {
+			w.Header().Set("Content-Type", "application/json")
+			writeBytes(w, []byte(`{"status":"ok"`)) // truncated: syntactically invalid JSON
+			return
+		}
+	}))
+	defer srv.Close()
+
+	tr, err := newJSONTransport(jsonSystem(t, srv), false)
+	if err != nil {
+		t.Fatalf("newJSONTransport: %v", err)
+	}
+	var st models.Statistics
+	err = tr.Do(context.Background(), "stats", nil, &st)
+	if err == nil {
+		t.Fatal("Do succeeded against a truncated JSON login body; want error")
+	}
 	if isUnsupported(err) {
-		t.Errorf("error = %v classified as unsupported; a valid token body must not be misread as no-JSON-path", err)
+		t.Errorf("error = %v classified as unsupported; a truncated JSON body is a real fault from a JSON-capable appliance, not a signal to fall back to XML", err)
 	}
 }
 
@@ -210,10 +273,9 @@ func TestJSONEnvelopeRejectsAPIError(t *testing.T) {
 // credential in both cases.
 func TestJSONEnvelopeStatusCodeIsChecked(t *testing.T) {
 	cases := []struct {
-		name       string
-		body       string
-		wantAuth   bool
-		wantErrMsg string // substring the returned error must contain
+		name     string
+		body     string
+		wantAuth bool
 	}{
 		{
 			name:     "fail status with a Data payload must not be reported as success",

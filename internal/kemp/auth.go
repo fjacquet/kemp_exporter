@@ -1,6 +1,7 @@
 package kemp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,6 +87,18 @@ func (s *session) refresh(ctx context.Context, c *resty.Client, user, pass strin
 
 // obtain returns a token from a generation newer than staleGen, performing at
 // most one login per group of callers that observe the same staleGen
+// concurrently. It delegates to obtainVia with s.login as the attempt, which
+// exists as a separate, parameterized function so its panic-safety (see the
+// doc comment there) can be exercised directly in tests without a real login
+// round trip.
+func (s *session) obtain(ctx context.Context, c *resty.Client, user, pass string, staleGen int) (string, int, error) {
+	return obtainVia(s, staleGen, func() (string, error) {
+		return s.login(ctx, c, user, pass)
+	})
+}
+
+// obtainVia implements session's singleflight collapse: at most one call to
+// attempt runs per group of callers that observe the same staleGen
 // concurrently.
 //
 // Three cases, in order:
@@ -96,12 +109,12 @@ func (s *session) refresh(ctx context.Context, c *resty.Client, user, pass strin
 //     its result -- success or failure alike -- rather than starting a second
 //     one. This is what collapses N concurrent callers into one login.
 //  3. Otherwise this caller is the first to notice the staleness: become the
-//     single flight, perform the real login, and hand the result to anyone who
-//     joined via case 2 while it was in flight.
+//     single flight, run attempt, and hand the result to anyone who joined via
+//     case 2 while it was in flight.
 //
 // The lock is held only for the brief state checks/transitions around the
-// network call, not across the call itself, so unrelated session operations
-// are never blocked on a slow login.
+// call to attempt, not across the call itself, so unrelated session
+// operations are never blocked on a slow login.
 //
 // This bounds collapsing to callers that are concurrent with an in-flight
 // attempt. A caller that arrives after a failed attempt has already finished
@@ -109,7 +122,17 @@ func (s *session) refresh(ctx context.Context, c *resty.Client, user, pass strin
 // its own rather than being blocked forever by the earlier failure -- there is
 // deliberately no permanent negative caching here; see the non-blocking note
 // in the Task 6 review about where that policy belongs instead.
-func (s *session) obtain(ctx context.Context, c *resty.Client, user, pass string, staleGen int) (string, int, error) {
+//
+// Publishing the result and clearing s.pending happen in a defer, so both
+// still run if attempt panics: without this, a panicking login would leave
+// s.pending set forever (every subsequent caller with no cached token wedges
+// on the pending branch above) and every current waiter blocked on <-p.done
+// forever, with no timeout -- permanent goroutine accumulation. The panic
+// itself is re-raised after the defer runs, so the leader's own goroutine
+// still observes and propagates it exactly as it would have before this
+// singleflight existed; only peers that were waiting to share the leader's
+// result are protected from hanging.
+func obtainVia(s *session, staleGen int, attempt func() (string, error)) (string, int, error) {
 	s.mu.Lock()
 	if s.gen != staleGen && s.token != "" {
 		tok, gen := s.token, s.gen
@@ -126,20 +149,35 @@ func (s *session) obtain(ctx context.Context, c *resty.Client, user, pass string
 	s.pending = p
 	s.mu.Unlock()
 
-	tok, err := s.login(ctx, c, user, pass)
+	var tok string
+	var err error
+	func() {
+		defer func() {
+			r := recover()
+			if r != nil {
+				err = fmt.Errorf("login: panic: %v", r)
+			}
 
-	s.mu.Lock()
-	s.gen++
-	if err == nil {
-		s.token = tok
-	}
-	newGen := s.gen
-	s.pending = nil
-	s.mu.Unlock()
+			s.mu.Lock()
+			s.gen++
+			if err == nil {
+				s.token = tok
+			}
+			newGen := s.gen
+			s.pending = nil
+			s.mu.Unlock()
 
-	p.token, p.gen, p.err = tok, newGen, err
-	close(p.done)
-	return tok, newGen, err
+			p.token, p.gen, p.err = tok, newGen, err
+			close(p.done)
+
+			if r != nil {
+				panic(r)
+			}
+		}()
+		tok, err = attempt()
+	}()
+
+	return p.token, p.gen, p.err
 }
 
 // login performs one login round-trip. It touches no session state itself;
@@ -175,10 +213,31 @@ func (s *session) login(ctx context.Context, c *resty.Client, user, pass string)
 	}
 	var out loginResponse
 	if err := json.Unmarshal(resp.Body(), &out); err != nil {
+		// A decode failure is only a "this firmware doesn't speak JSON" signal
+		// when the body isn't even trying to be JSON (XML, HTML, plain text --
+		// the same /access/<cmd> namespace the XML transport uses, so a
+		// JSON-less firmware or a captive portal answering HTTP 200 here is a
+		// real shape, not hypothetical). A body that starts like JSON but
+		// fails to parse is a truncated or corrupt response from an appliance
+		// that DOES speak JSON, and must stay a hard error: classifying it as
+		// errUnsupported would let Task 7 silently downgrade to XML and mask
+		// a genuine fault.
+		if !looksLikeJSON(resp.Body()) {
+			return "", fmt.Errorf("login: %w (response is not JSON)", errUnsupported)
+		}
 		return "", fmt.Errorf("login: decode response: %w", err)
 	}
 	if out.Success.Data.Token == "" {
 		return "", fmt.Errorf("login: %w (no token in response)", errUnsupported)
 	}
 	return out.Success.Data.Token, nil
+}
+
+// looksLikeJSON reports whether body appears to be JSON, ignoring leading
+// whitespace. It does not validate the body -- json.Unmarshal already does
+// that -- it only distinguishes "this is JSON that failed to parse" (a real
+// fault) from "this isn't JSON at all" (the appliance doesn't speak JSON).
+func looksLikeJSON(body []byte) bool {
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
 }
