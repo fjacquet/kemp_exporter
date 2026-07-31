@@ -1,0 +1,69 @@
+---
+# End-to-end demo stack — exporter BUILT FROM SOURCE.
+#   cp .env.example .env   # then edit KEMP1_HOSTNAME / KEMP1_APIKEY
+#   docker compose up --build
+# Then open Grafana at http://localhost:3000 (admin / GRAFANA_ADMIN_PASSWORD,
+# default "admin") -> "Kemp LoadMaster — Overview".
+#
+# Services: kemp_exporter -> prometheus -> grafana.
+#
+# IMPORTANT — there is no LoadMaster appliance bundled with this stack, unlike the
+# demo stacks for some sibling exporters that ship a fake backend. config.yaml (at
+# the repo root) ships with an obvious placeholder host/API key, sourced from
+# KEMP1_HOSTNAME / KEMP1_APIKEY below. Until you point those at a real, reachable
+# LoadMaster, the exporter will start fine but every collection cycle will fail:
+# kemp_up will read 0 and there will be no virtual-service or real-server series at
+# all. kemp_exporter_build_info is still present, and Prometheus/Grafana both come
+# up healthy — that is the correct, expected state of a quickstart with nothing to
+# scrape, not a bug.
+services:
+  kemp_exporter:
+    build: .
+    image: kemp_exporter
+    # Build-only image (no registry). Without this, `docker compose pull`/`up`
+    # tries to pull `kemp_exporter` from Docker Hub and fails with access-denied.
+    pull_policy: build
+    container_name: kemp_exporter
+    command: ["--config", "/etc/kemp_exporter/config.yaml"]
+    ports:
+      - "9447:9447"
+    environment:
+      # Placeholders — replace with a real, reachable LoadMaster before expecting
+      # any virtual-service/real-server data. See .env.example.
+      - KEMP1_HOSTNAME=${KEMP1_HOSTNAME:-10.0.0.1}
+      - KEMP1_APIKEY=${KEMP1_APIKEY:-replace-me}
+    volumes:
+      - ./config.yaml:/etc/kemp_exporter/config.yaml:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: kemp_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus:/etc/prometheus/rules:ro
+    depends_on:
+      - kemp_exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: kemp_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # Test-stack credentials (admin / admin by default). Change for anything
+      # non-local via GRAFANA_ADMIN_PASSWORD in .env.
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      # Datasource + dashboard providers (auto-provisioned on startup).
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Bundled dashboard.
+      - ./grafana/kemp-overview.json:/var/lib/grafana/dashboards/kemp-overview.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

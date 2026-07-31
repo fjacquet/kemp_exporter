@@ -1,0 +1,36 @@
+[Unit]
+Description=Kemp LoadMaster Prometheus exporter
+Documentation=https://fjacquet.github.io/kemp_exporter/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kemp_exporter
+Group=kemp_exporter
+EnvironmentFile=/etc/kemp_exporter/kemp_exporter.env
+ExecStart=/usr/local/bin/kemp_exporter --config /etc/kemp_exporter/config.yaml
+# Reuses the built-in SIGHUP hot reload, so `systemctl reload` swaps the target set
+# without dropping a collection cycle.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

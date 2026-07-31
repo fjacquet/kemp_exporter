@@ -1,0 +1,220 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "title": "Kemp LoadMaster — Overview",
+  "uid": "kemp-overview",
+  "tags": ["kemp", "loadmaster"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "system",
+        "label": "LoadMaster",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(kemp_up, system)", "refId": "vars" },
+        "refresh": 2,
+        "multi": false,
+        "includeAll": false,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "About this dashboard",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Replaces Grafana dashboard **12160** (SNMP-sourced; shares no metrics with `kemp_`). This dashboard is built entirely from `kemp_exporter`'s REST-derived metrics. **Dropped:** the 12160 \"Disk available\" panel has no REST-API equivalent and is not reproduced here. If the exporter has no reachable LoadMaster configured, only `kemp_up 0` and `kemp_exporter_build_info` will be present — every other panel is expected to be empty until a real appliance is scraped."
+      }
+    },
+    {
+      "type": "row",
+      "title": "Status",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 3 }
+    },
+    {
+      "type": "stat",
+      "title": "Target reachable",
+      "description": "kemp_up for the selected system. 0 means the exporter could not collect from this LoadMaster on the last cycle.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 4 },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ]
+        }
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "kemp_up{system=\"$system\"}", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "VS up count",
+      "description": "Virtual services currently up on the selected system.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 4 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(kemp_virtual_service_up{system=\"$system\"} == 1) OR on() vector(0)", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "VS down count",
+      "description": "Virtual services currently down on the selected system.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 4 },
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "count(kemp_virtual_service_up{system=\"$system\"} == 0) OR on() vector(0)", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active connections",
+      "description": "Sum of kemp_virtual_service_active_connections across all virtual services on the selected system.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 4 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(kemp_virtual_service_active_connections{system=\"$system\"})", "instant": true }
+      ]
+    },
+    {
+      "type": "gauge",
+      "title": "CPU busy %",
+      "description": "100 - kemp_cpu_idle_percent for the aggregate (cpu=\"total\") row.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 } ] }
+        }
+      },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "100 - kemp_cpu_idle_percent{system=\"$system\", cpu=\"total\"}", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Free memory",
+      "description": "kemp_memory_free_bytes for the selected system.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 4 },
+      "options": { "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "kemp_memory_free_bytes{system=\"$system\"}", "instant": true }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Traffic",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "VS outbound bits/s",
+      "description": "rate(kemp_virtual_service_bytes_written_total[5m]) * 8, summed by virtual service name.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(kemp_virtual_service_bytes_written_total{system=\"$system\"}[5m]) * 8", "legendFormat": "{{name}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Interface in bits/s",
+      "description": "rate(kemp_interface_bytes_read_total[5m]) * 8, per network interface.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(kemp_interface_bytes_read_total{system=\"$system\"}[5m]) * 8", "legendFormat": "{{interface}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Interface out bits/s",
+      "description": "rate(kemp_interface_bytes_written_total[5m]) * 8, per network interface.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "bps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(kemp_interface_bytes_written_total{system=\"$system\"}[5m]) * 8", "legendFormat": "{{interface}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Transactions & virtual services",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }
+    },
+    {
+      "type": "timeseries",
+      "title": "TPS",
+      "description": "kemp_tps and kemp_tps_ssl. Both are gauges (already rates) — never wrapped in rate().",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "kemp_tps{system=\"$system\"}", "legendFormat": "tps" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "kemp_tps_ssl{system=\"$system\"}", "legendFormat": "tps (ssl)" }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Top 5 VS by traffic (24h)",
+      "description": "topk(5, increase(kemp_virtual_service_bytes_written_total[1d])) — bytes written over the last day, top 5 virtual services.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "topk(5, increase(kemp_virtual_service_bytes_written_total{system=\"$system\"}[1d]))", "legendFormat": "{{name}} ({{address}}:{{port}})", "instant": true }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Degraded services",
+      "description": "kemp_virtual_service_status where status != \"Up\" — includes appliance states such as Sick or Disabled. status is the appliance's own string, case-sensitive.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "kemp_virtual_service_status{system=\"$system\", status!=\"Up\"}", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true, "__name__": true, "job": true, "instance": true },
+            "indexByName": { "system": 0, "name": 1, "address": 2, "port": 3, "protocol": 4, "status": 5 }
+          }
+        }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "cellOptions": { "type": "auto" } } } }
+    }
+  ]
+}

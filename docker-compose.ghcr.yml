@@ -1,0 +1,56 @@
+---
+# Pull-based stack: runs the published GHCR image instead of building the exporter.
+#
+#   cp .env.example .env   # then edit KEMP1_HOSTNAME / KEMP1_APIKEY
+#   docker compose -f docker-compose.ghcr.yml up
+#
+# Pin a version with KEMP_TAG (defaults to :latest):
+#   KEMP_TAG=0.1.0 docker compose -f docker-compose.ghcr.yml up
+#
+# Refresh images later with:  docker compose -f docker-compose.ghcr.yml pull
+#
+# Same caveat as docker-compose.yml: no LoadMaster ships with this stack. Until
+# KEMP1_HOSTNAME / KEMP1_APIKEY in .env point at a real, reachable appliance,
+# kemp_up stays 0 with no virtual-service/real-server series — the expected,
+# honest state of a quickstart with nothing to scrape.
+services:
+  kemp_exporter:
+    image: ghcr.io/fjacquet/kemp_exporter:${KEMP_TAG:-latest}
+    container_name: kemp_exporter
+    command: ["--config", "/etc/kemp_exporter/config.yaml"]
+    ports:
+      - "9447:9447"
+    environment:
+      - KEMP1_HOSTNAME=${KEMP1_HOSTNAME:-10.0.0.1}
+      - KEMP1_APIKEY=${KEMP1_APIKEY:-replace-me}
+    volumes:
+      - ./config.yaml:/etc/kemp_exporter/config.yaml:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: kemp_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus:/etc/prometheus/rules:ro
+    depends_on:
+      - kemp_exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: kemp_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/kemp-overview.json:/var/lib/grafana/dashboards/kemp-overview.json:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

@@ -1,0 +1,80 @@
+---
+groups:
+  - name: kemp
+    rules:
+      - alert: KempTargetDown
+        expr: kemp_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LoadMaster {{ $labels.system }} unreachable"
+          description: "The exporter has failed to collect from {{ $labels.system }} for 5 minutes."
+
+      - alert: KempExporterNotReporting
+        expr: absent(kemp_up)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No kemp_up series at all"
+          description: "The exporter is not reporting any LoadMaster. Check that it is running and scraped."
+
+      - alert: KempVirtualServiceDown
+        expr: kemp_virtual_service_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Virtual service {{ $labels.name }} ({{ $labels.address }}:{{ $labels.port }}) is down"
+
+      # NOTE on case sensitivity: `status` is the LoadMaster's own status string,
+      # passed through unmodified — the exporter lowercases only for its internal
+      # up/down mapping (kemp_virtual_service_up), never for this label's value.
+      # This rule intentionally matches the literal "Sick" (capital S), which is
+      # what every appliance observed so far reports. An appliance that instead
+      # reports "sick" (lowercase) would silently never trip this alert — if this
+      # rule looks like it should have fired but hasn't, check the actual label
+      # value with `kemp_virtual_service_status{system="..."}` before assuming the
+      # service is healthy.
+      - alert: KempVirtualServiceDegraded
+        expr: kemp_virtual_service_status{status="Sick"} == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Virtual service {{ $labels.name }} is Sick"
+          description: "Still serving traffic, but the LoadMaster reports it degraded."
+
+      - alert: KempRealServerDown
+        expr: kemp_real_server_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Real server {{ $labels.address }}:{{ $labels.port }} is down"
+
+      - alert: KempMemoryLow
+        expr: kemp_memory_used_percent > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LoadMaster {{ $labels.system }} memory above 90%"
+
+      - alert: KempMemoryMetricMissing
+        expr: kemp_up == 1 unless on(system) kemp_memory_used_percent
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory metrics missing for a reachable LoadMaster {{ $labels.system }}"
+          description: "The appliance is up but memory fields did not parse, so KempMemoryLow cannot fire."
+
+      - alert: KempCPUHigh
+        expr: 100 - kemp_cpu_idle_percent{cpu="total"} > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LoadMaster {{ $labels.system }} CPU above 90%"
