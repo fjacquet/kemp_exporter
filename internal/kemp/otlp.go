@@ -89,7 +89,9 @@ func newOTLPExporter(reader sdkmetric.Reader, store *SnapshotStore, serviceVersi
 // gauge aggregation collapses repeat observations into a single correct data
 // point regardless — so this guard is not what keeps exported data correct. What
 // it does prevent is unbounded growth: without it, every call to
-// EnsureInstruments (the collection loop calls it once per cycle, forever) would
+// EnsureInstruments (main.go's independent ticker calls it once per
+// cfg.Collection.Interval, forever, after an initial call performed once at
+// startup — CollectionLoop.Run never calls this method) would
 // register one more redundant Float64ObservableGauge + callback closure for every
 // name it already knows, accumulating for the life of the process. A name that
 // appears for the first time on a later cycle — a LoadMaster gaining a virtual

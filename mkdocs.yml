@@ -1,0 +1,33 @@
+site_name: kemp_exporter
+site_description: Prometheus + OTLP exporter for Progress Kemp LoadMaster appliances
+repo_url: https://github.com/fjacquet/kemp_exporter
+repo_name: fjacquet/kemp_exporter
+exclude_docs: |
+  superpowers/
+theme:
+  name: material
+  features: [navigation.sections, navigation.top, content.code.copy]
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+nav:
+  - Home: index.md
+  - Metrics reference: metrics.md
+  - Dashboards: dashboards.md
+  - Deployment:
+      - Docker: deployment/docker.md
+      - systemd: deployment/systemd.md
+  - Architecture decisions:
+      - Overview: adr/index.md
+      - 0001 Supply-chain and release hardening: adr/0001-supply-chain-and-release-hardening.md
+      - 0002 Snapshot collection model: adr/0002-snapshot-collection-model.md
+      - 0003 Hand-rolled resty client: adr/0003-hand-rolled-resty-client.md
+      - 0004 Dual transport, single model: adr/0004-dual-transport-single-model.md
+      - 0005 Metric naming and units: adr/0005-metric-naming-and-units.md
+      - 0006 Label-key union invariant: adr/0006-label-key-union-invariant.md
+      - 0007 Own dashboard, not Grafana 12160: adr/0007-own-dashboard-not-grafana-12160.md
+      - 0008 Config hot reload: adr/0008-config-hot-reload.md
+
+extra:
+  version: v0.1.0
