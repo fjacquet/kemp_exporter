@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Response stat="200" code="ok">
+  <Success>
+    <Data>
+      <VS>
+        <Index>1</Index>
+        <NickName>web-https</NickName>
+        <VSAddress>10.0.0.10</VSAddress>
+        <VSPort>443</VSPort>
+        <Protocol>tcp</Protocol>
+        <Status>Up</Status>
+      </VS>
+      <VS>
+        <Index>2</Index>
+        <NickName>web-http</NickName>
+        <VSAddress>10.0.0.10</VSAddress>
+        <VSPort>80</VSPort>
+        <Protocol>tcp</Protocol>
+        <Status>Sick</Status>
+      </VS>
+    </Data>
+  </Success>
+</Response>

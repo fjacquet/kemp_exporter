@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "code": 200,
+  "Success": {
+    "Data": {
+      "VS": [
+        { "Index": 1, "NickName": "web-https", "VSAddress": "10.0.0.10",
+          "VSPort": 443, "Protocol": "tcp", "Status": "Up" },
+        { "Index": 2, "NickName": "web-http", "VSAddress": "10.0.0.10",
+          "VSPort": 80, "Protocol": "tcp", "Status": "Sick" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "status": "ok",
+  "code": 200,
+  "Success": {
+    "Data": {
+      "VStotals": { "ConnsPerSec": 150, "BytesPerSec": 2048000, "PktsPerSec": 3200 },
+      "CPU": [
+        { "id": "total", "User": 12, "System": 8, "Idle": 80 },
+        { "id": "cpu0", "User": 14, "System": 9, "Idle": 77 }
+      ],
+      "Memory": { "memused": 2147483648, "percentmemused": 50, "memfree": 2147483648 },
+      "TPS": { "Total": 420, "SSL": 75 },
+      "Network": [
+        { "id": "eth0", "ifaceID": 0, "bytesread": 987654321, "byteswritten": 123456789 }
+      ],
+      "Vs": [
+        { "Index": 1, "VSAddress": "10.0.0.10", "VSPort": 443, "VSProt": "tcp",
+          "TotalConns": 50000, "TotalPkts": 900000, "TotalBytes": 7000000000,
+          "ActiveConns": 42, "ConnsPerSec": 90,
+          "BytesRead": 4000000000, "BytesWritten": 3000000000, "Enable": 1 },
+        { "Index": 2, "VSAddress": "10.0.0.10", "VSPort": 80, "VSProt": "tcp",
+          "TotalConns": 1200, "TotalPkts": 24000, "TotalBytes": 90000000,
+          "ActiveConns": 3, "ConnsPerSec": 5,
+          "BytesRead": 50000000, "BytesWritten": 40000000, "Enable": 1 }
+      ],
+      "Rs": [
+        { "VSIndex": 1, "RSIndex": 1, "Addr": "192.168.1.20", "Port": 8443,
+          "Conns": 25000, "Pkts": 450000, "Bytes": 3500000000,
+          "ActiveConns": 21, "ConnsPerSec": 45,
+          "BytesRead": 2000000000, "BytesWritten": 1500000000 }
+      ]
+    }
+  }
+}
