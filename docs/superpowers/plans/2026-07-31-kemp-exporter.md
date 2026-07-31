@@ -1687,7 +1687,7 @@ git commit -m "feat(config): add SIGHUP and file-watch hot reload"
 ## Task 5: XML transport
 
 **Files:**
-- Create: `internal/kemp/transport.go`, `internal/kemp/transport_xml.go`, `internal/kemp/tracing.go`
+- Create: `internal/kemp/transport.go`, `internal/kemp/tlsconfig.go`, `internal/kemp/transport_xml.go`, `internal/kemp/tracing.go`
 - Test: `internal/kemp/transport_xml_test.go`
 
 **Interfaces:**
@@ -1696,6 +1696,7 @@ git commit -m "feat(config): add SIGHUP and file-watch hot reload"
   - `type transport interface { Name() string; Do(ctx context.Context, cmd string, params map[string]string, out any) error }`
   - `newXMLTransport(sys config.System, trace bool) (*xmlTransport, error)`
   - `newRestyClient(sys config.System, trace bool) (*resty.Client, error)` — shared by Task 6
+  - `tlsConfigFor(sys config.System) *tls.Config` — TLS 1.2 floor + operator-controlled skip-verify
   - `errAuth` and `errUnsupported` sentinel errors
 
 The XML wire shape: `GET {base}/access/{cmd}?apikey={key}&...` returning
@@ -1953,10 +1954,7 @@ func newRestyClient(sys config.System, trace bool) (*resty.Client, error) {
 	c := resty.New().
 		SetBaseURL(sys.BaseURL()).
 		SetTimeout(30*time.Second).
-		SetTLSClientConfig(&tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: sys.InsecureSkipVerify.Value(), //#nosec G402 -- operator-controlled, defaults false, documented
-		}).
+		SetTLSClientConfig(tlsConfigFor(sys)).
 		SetRetryCount(3).
 		SetRetryWaitTime(500 * time.Millisecond).
 		SetRetryMaxWaitTime(5 * time.Second).
@@ -1973,7 +1971,40 @@ func newRestyClient(sys config.System, trace bool) (*resty.Client, error) {
 }
 ```
 
-**Note on the `#nosec` comment above:** the family rule forbids inline suppressions. Before implementing, try removing that comment and running `make lint` plus the semgrep hook. If a rule fires, restructure by moving TLS construction into a small `tlsConfigFor(sys config.System) *tls.Config` helper in its own file with a package-level doc comment explaining the operator-controlled flag — do **not** keep the suppression. Record whichever resolution you land on in the task's commit message.
+Create `internal/kemp/tlsconfig.go` — the TLS settings live in their own file so the
+operator-controlled `insecureSkipVerify` read is explained once, at the top, instead of
+carrying an inline scanner suppression. **Do not add `//#nosec`, `//nolint`, or
+`// nosemgrep` anywhere**; if a scanner still fires, extend this file's doc comment or
+restructure further, but the suppression stays out.
+
+```go
+package kemp
+
+import (
+	"crypto/tls"
+
+	"github.com/fjacquet/kemp_exporter/internal/config"
+)
+
+// tlsConfigFor builds the TLS settings for one LoadMaster.
+//
+// InsecureSkipVerify is operator-controlled, not a hardcoded default: it is a
+// per-target config field that defaults to false, appears in the SafeConfig output an
+// operator sees at startup, and is documented in config.yaml as a man-in-the-middle
+// risk. Static scanners flag the field read here; the policy decision lives in the
+// configuration, not in this function. This is the deliberate correction to
+// giantswarm/kemp-client, which hardcoded InsecureSkipVerify: true with no opt-out.
+//
+// MinVersion is pinned to TLS 1.2, the family floor.
+func tlsConfigFor(sys config.System) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: sys.InsecureSkipVerify.Value(),
+	}
+}
+```
+
+Drop the now-unused `"crypto/tls"` import from `transport.go`.
 
 - [ ] **Step 5: Implement the XML transport and tracing**
 
