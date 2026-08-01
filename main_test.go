@@ -197,32 +197,53 @@ func TestServingStartsBeforeFirstCollectionCompletes(t *testing.T) {
 	}
 }
 
-// /health is driven by snapshot age, independent of kemp_up.
+// /health is driven by snapshot age, independent of kemp_up -- and it ALWAYS
+// answers 200. The starting/stale distinction lives in the body, never in the
+// status code: /health used to return 503 while starting or stale, which meant
+// any orchestrator probe pointed at it would restart or depool an exporter that
+// was merely waiting on its first cycle, or whose appliance was briefly
+// unreachable. /livez and /readyz are the endpoints probes should use; they read
+// no state and cannot fail. /health is the diagnostic endpoint, and a diagnostic
+// endpoint that refuses to answer is useless precisely when it is needed.
 func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 	store := kemp.NewSnapshotStore()
 	h := healthHandler(store, time.Minute)
 
-	// No snapshot yet: starting up, not yet healthy.
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("pre-collection status = %d, want 503", rec.Code)
+	get := func() (int, string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		return rec.Code, rec.Body.String()
 	}
 
-	// Fresh snapshot: healthy.
+	// No snapshot yet: starting up. 200, and the body says which.
+	code, body := get()
+	if code != http.StatusOK {
+		t.Errorf("pre-collection status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "starting") {
+		t.Errorf("pre-collection body = %q, want it to report %q", body, "starting")
+	}
+
+	// Fresh snapshot: healthy, and the body must not claim otherwise.
 	store.Store(&kemp.Snapshot{BuiltAt: time.Now()})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("fresh-snapshot status = %d, want 200", rec.Code)
+	code, body = get()
+	if code != http.StatusOK {
+		t.Errorf("fresh-snapshot status = %d, want 200", code)
+	}
+	if !strings.HasPrefix(body, "ok") {
+		t.Errorf("fresh-snapshot body = %q, want it to start with %q", body, "ok")
 	}
 
 	// Stale snapshot: the loop is wedged even though kemp_up may still read 1.
+	// Still 200 -- the body is what carries the bad news.
 	store.Store(&kemp.Snapshot{BuiltAt: time.Now().Add(-10 * time.Minute)})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("stale-snapshot status = %d, want 503", rec.Code)
+	code, body = get()
+	if code != http.StatusOK {
+		t.Errorf("stale-snapshot status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "stale") {
+		t.Errorf("stale-snapshot body = %q, want it to report %q", body, "stale")
 	}
 }
 

@@ -68,22 +68,34 @@ func metricsHandler(reg *prometheus.Registry) http.Handler {
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 }
 
-// healthHandler reports liveness from snapshot AGE, deliberately independent of
-// kemp_up. kemp_up describes the backend; a wedged collection loop would leave it
-// at a stale 1 forever, so staleness is the only honest liveness signal.
+// healthHandler reports collection freshness from snapshot AGE, deliberately
+// independent of kemp_up. kemp_up describes the backend; a wedged collection loop
+// would leave it at a stale 1 forever, so staleness is the only honest freshness
+// signal.
+//
+// It ALWAYS answers 200. The starting/stale information is carried in the body,
+// never in the status code. This handler used to return 503 in both of those
+// cases, which made it unsafe as an orchestrator probe target: a Kubernetes
+// liveness probe would restart an exporter that was merely waiting on its first
+// collection cycle, and a readiness probe would depool one whose appliance was
+// briefly unreachable -- neither of which the exporter process can fix by dying.
+// /livez and /readyz (staticOKHandler) exist for probes; /health exists for a
+// human or a dashboard asking "is collection actually current?", and an endpoint
+// that answers that question by refusing to answer is useless exactly when it
+// matters.
 func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		snap := store.Load()
-		if snap.BuiltAt.IsZero() {
-			http.Error(w, "starting: no collection cycle has completed yet", http.StatusServiceUnavailable)
-			return
-		}
-		if age := time.Since(snap.BuiltAt); age > maxAge {
-			http.Error(w, fmt.Sprintf("stale: last collection %s ago", age.Round(time.Second)), http.StatusServiceUnavailable)
-			return
+		body := "ok\n"
+		switch {
+		case snap.BuiltAt.IsZero():
+			body = "starting: no collection cycle has completed yet\n"
+		case time.Since(snap.BuiltAt) > maxAge:
+			body = fmt.Sprintf("stale: last collection %s ago\n",
+				time.Since(snap.BuiltAt).Round(time.Second))
 		}
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok\n")); err != nil {
+		if _, err := w.Write([]byte(body)); err != nil {
 			logrus.WithError(err).Debug("health response write failed")
 		}
 	})
