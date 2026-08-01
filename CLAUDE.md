@@ -12,7 +12,7 @@ documentation — metric catalog, dashboards, deployment guides, ADRs — is at
 `docs/` and published to <https://fjacquet.github.io/kemp_exporter/>.
 
 Module: `github.com/fjacquet/kemp_exporter`. Binary: `kemp_exporter`. Metrics port:
-`9447`. OTLP gRPC: `4317`.
+`9448` (moved from 9447 in v0.2.0; 9447 collided with `nsr_exporter`). OTLP gRPC: `4317`.
 
 ## Commands
 

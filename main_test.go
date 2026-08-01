@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -197,32 +198,187 @@ func TestServingStartsBeforeFirstCollectionCompletes(t *testing.T) {
 	}
 }
 
-// /health is driven by snapshot age, independent of kemp_up.
+// /health is driven by snapshot age, independent of kemp_up -- and it ALWAYS
+// answers 200. The starting/stale distinction lives in the body, never in the
+// status code: /health used to return 503 while starting or stale, which meant
+// any orchestrator probe pointed at it would restart or depool an exporter that
+// was merely waiting on its first cycle, or whose appliance was briefly
+// unreachable. /livez and /readyz are the endpoints probes should use; they read
+// no state and cannot fail. /health is the diagnostic endpoint, and a diagnostic
+// endpoint that refuses to answer is useless precisely when it is needed.
 func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 	store := kemp.NewSnapshotStore()
 	h := healthHandler(store, time.Minute)
 
-	// No snapshot yet: starting up, not yet healthy.
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("pre-collection status = %d, want 503", rec.Code)
+	get := func() (int, string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		return rec.Code, rec.Body.String()
 	}
 
-	// Fresh snapshot: healthy.
+	// No snapshot yet: starting up. 200, and the body says which.
+	code, body := get()
+	if code != http.StatusOK {
+		t.Errorf("pre-collection status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "starting") {
+		t.Errorf("pre-collection body = %q, want it to report %q", body, "starting")
+	}
+
+	// Fresh snapshot: healthy, and the body must not claim otherwise.
 	store.Store(&kemp.Snapshot{BuiltAt: time.Now()})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusOK {
-		t.Errorf("fresh-snapshot status = %d, want 200", rec.Code)
+	code, body = get()
+	if code != http.StatusOK {
+		t.Errorf("fresh-snapshot status = %d, want 200", code)
+	}
+	if !strings.HasPrefix(body, "ok") {
+		t.Errorf("fresh-snapshot body = %q, want it to start with %q", body, "ok")
 	}
 
 	// Stale snapshot: the loop is wedged even though kemp_up may still read 1.
+	// Still 200 -- the body is what carries the bad news.
 	store.Store(&kemp.Snapshot{BuiltAt: time.Now().Add(-10 * time.Minute)})
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("stale-snapshot status = %d, want 503", rec.Code)
+	code, body = get()
+	if code != http.StatusOK {
+		t.Errorf("stale-snapshot status = %d, want 200", code)
+	}
+	if !strings.Contains(body, "stale") {
+		t.Errorf("stale-snapshot body = %q, want it to report %q", body, "stale")
+	}
+}
+
+// renderHealthBody itself must never escape its input -- it is a thin
+// io.WriteString wrapper, so this only proves that primitive copies bytes
+// verbatim; it does NOT exercise healthHandler or the call site's choice of
+// renderHealthBody over html/template, since it never calls healthHandler.
+// TestHealthHandlerBodyIsWrittenVerbatim below is the test that guards the
+// call site: it drives healthHandler itself and would fail if that call site
+// regressed to routing the body through html/template.
+func TestRenderHealthBodyDoesNotEscape(t *testing.T) {
+	body := "stale: dial tcp lm&prod<01>:443 failed\n"
+
+	var buf strings.Builder
+	if err := renderHealthBody(&buf, body); err != nil {
+		t.Fatalf("renderHealthBody: %v", err)
+	}
+
+	got := buf.String()
+	if got != body {
+		t.Errorf("renderHealthBody wrote %q, want the raw input %q unescaped", got, body)
+	}
+	if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") || strings.Contains(got, "&gt;") {
+		t.Errorf("renderHealthBody produced HTML entities in a text/plain body: %q", got)
+	}
+}
+
+// TestHealthHandlerBodyIsWrittenVerbatim drives healthHandler itself -- not
+// renderHealthBody in isolation -- across all three freshness states, and
+// asserts both the exact Content-Type header (untested until now) and that
+// the response body is byte-identical to healthBody's own output, with no
+// HTML entities anywhere in it.
+//
+// This is the test that actually guards main.go's call-site choice of
+// renderHealthBody over html/template: verified by temporarily swapping that
+// call site to route through html/template (and, since today's three bodies
+// contain nothing escapable, temporarily giving the "ok" body a stray '<' to
+// give escaping something to bite on) -- the byte-identical comparison below
+// failed as expected, then passed again once both changes were reverted.
+func TestHealthHandlerBodyIsWrittenVerbatim(t *testing.T) {
+	maxAge := time.Minute
+
+	cases := []struct {
+		name string
+		snap *kemp.Snapshot
+	}{
+		{"starting", &kemp.Snapshot{}},
+		{"ok", &kemp.Snapshot{BuiltAt: time.Now()}},
+		{"stale", &kemp.Snapshot{BuiltAt: time.Now().Add(-10 * time.Minute)}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := kemp.NewSnapshotStore()
+			store.Store(tc.snap)
+			h := healthHandler(store, maxAge)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+			if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want %q", ct, "text/plain; charset=utf-8")
+			}
+
+			want := healthBody(tc.snap, maxAge)
+			got := rec.Body.String()
+			if got != want {
+				t.Errorf("body = %q, want healthBody's own output %q written verbatim", got, want)
+			}
+			if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") ||
+				strings.Contains(got, "&gt;") || strings.Contains(got, "&#") {
+				t.Errorf("body contains HTML entities in a text/plain response: %q", got)
+			}
+		})
+	}
+}
+
+// /livez and /readyz must answer 200 before any collection cycle has completed,
+// and they must be wired into the mux startServing actually builds -- calling
+// staticOKHandler directly would pass even if nobody registered it, which is
+// exactly the regression worth guarding. /health is checked here too, for the
+// same wiring reason.
+//
+// Never probe /metrics instead: rendering the full exposition on every probe tick
+// is needless load, and it can block behind a slow collection cycle -- which is
+// the failure these endpoints exist to be immune to.
+func TestProbeEndpointsAlwaysOKBeforeFirstCollection(t *testing.T) {
+	store := kemp.NewSnapshotStore()
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(kemp.NewPromCollector(store)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// A deliberately slow first collection: the probes must answer while it is
+	// still in flight, not merely after it finishes.
+	slow := &kemp.MockClient{
+		SystemName: "lm-01",
+		Stats:      &models.Statistics{},
+		StatsDelay: 300 * time.Millisecond,
+	}
+	loop := kemp.NewCollectionLoop([]kemp.Client{slow}, config.Collection{
+		Interval:      time.Hour,
+		Timeout:       2 * time.Second,
+		MaxConcurrent: 1,
+	}, store)
+
+	cfg := &config.Config{Server: config.Server{Host: "127.0.0.1", Port: "0", URI: "/metrics"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv, ln, err := startServing(ctx, cfg, reg, store, loop)
+	if err != nil {
+		t.Fatalf("startServing: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	for _, path := range []string{"/livez", "/readyz", "/health"} {
+		resp, err := http.Get("http://" + ln.Addr().String() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		code := resp.StatusCode
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s body: %v", path, readErr)
+		}
+		if code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200 before the first collection cycle", path, code)
+		}
+		if strings.Contains(string(bodyBytes), "<html>") {
+			t.Errorf("GET %s served the index landing page: the route is not registered", path)
+		}
 	}
 }
 

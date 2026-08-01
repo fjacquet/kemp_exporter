@@ -15,3 +15,4 @@ add a new one that supersedes it.
 | [0006](0006-label-key-union-invariant.md) | One label-key set per metric name; empty value, never missing key | accepted |
 | [0007](0007-own-dashboard-not-grafana-12160.md) | Own Grafana dashboard instead of the incompatible community dashboard 12160 | accepted |
 | [0008](0008-config-hot-reload.md) | SIGHUP plus directory-watch config hot reload, fail-safe on a bad file | accepted |
+| [0009](0009-always-200-probes-and-port-9448.md) | Static `/livez` + `/readyz`, an always-200 `/health`, container `HEALTHCHECK`, and the move to port 9448 | accepted |

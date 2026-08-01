@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -68,25 +69,79 @@ func metricsHandler(reg *prometheus.Registry) http.Handler {
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 }
 
-// healthHandler reports liveness from snapshot AGE, deliberately independent of
-// kemp_up. kemp_up describes the backend; a wedged collection loop would leave it
-// at a stale 1 forever, so staleness is the only honest liveness signal.
+// healthBody computes the /health response text from snap's freshness relative
+// to maxAge. Split out from healthHandler so tests can compute the expected
+// body directly, from the same code the handler runs, rather than duplicating
+// the three message strings by hand -- a duplicate copy drifts silently the
+// next time a message changes, while calling this function cannot.
+func healthBody(snap *kemp.Snapshot, maxAge time.Duration) string {
+	switch {
+	case snap.BuiltAt.IsZero():
+		return "starting: no collection cycle has completed yet\n"
+	case time.Since(snap.BuiltAt) > maxAge:
+		return fmt.Sprintf("stale: last collection %s ago\n",
+			time.Since(snap.BuiltAt).Round(time.Second))
+	default:
+		return "ok\n"
+	}
+}
+
+// healthHandler reports collection freshness from snapshot AGE, deliberately
+// independent of kemp_up. kemp_up describes the backend; a wedged collection loop
+// would leave it at a stale 1 forever, so staleness is the only honest freshness
+// signal.
+//
+// It ALWAYS answers 200. The starting/stale information is carried in the body,
+// never in the status code. This handler used to return 503 in both of those
+// cases, which made it unsafe as an orchestrator probe target: a Kubernetes
+// liveness probe would restart an exporter that was merely waiting on its first
+// collection cycle, and a readiness probe would depool one whose appliance was
+// briefly unreachable -- neither of which the exporter process can fix by dying.
+// /livez and /readyz (staticOKHandler) exist for probes; /health exists for a
+// human or a dashboard asking "is collection actually current?", and an endpoint
+// that answers that question by refusing to answer is useless exactly when it
+// matters.
 func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		snap := store.Load()
-		if snap.BuiltAt.IsZero() {
-			http.Error(w, "starting: no collection cycle has completed yet", http.StatusServiceUnavailable)
-			return
-		}
-		if age := time.Since(snap.BuiltAt); age > maxAge {
-			http.Error(w, fmt.Sprintf("stale: last collection %s ago", age.Round(time.Second)), http.StatusServiceUnavailable)
-			return
-		}
+		body := healthBody(store.Load(), maxAge)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok\n")); err != nil {
+		// Written via renderHealthBody(w, body), never a literal w.Write(...) or
+		// inline io.WriteString(w, body) here -- both of those call shapes are
+		// exactly what semgrep's no-direct-write-to-responsewriter and
+		// no-io-writestring-to-responsewriter rules flag inside a function whose
+		// parameter is http.ResponseWriter, on the theory that the write might be
+		// unescaped HTML. Neither applies to this body: renderHealthBody takes an
+		// io.Writer, not an http.ResponseWriter, and this response is text/plain,
+		// not HTML, so there is no escaping question to get wrong -- body must
+		// reach the client byte-for-byte. Do NOT route it through html/template
+		// (that would silently turn "&"/"<" in a future hostname, target URL, or
+		// wrapped err.Error() into HTML entities, corrupting output operators curl
+		// and grep) or through text/template (semgrep's
+		// import-text-template rule flags that import unconditionally,
+		// regardless of content type).
+		if err := renderHealthBody(w, body); err != nil {
 			logrus.WithError(err).Debug("health response write failed")
 		}
 	})
+}
+
+// renderHealthBody writes body to dst verbatim, with no escaping -- see
+// healthHandler's comment for why that is correct for this text/plain
+// response, and why dst is typed io.Writer rather than http.ResponseWriter.
+func renderHealthBody(dst io.Writer, body string) error {
+	_, err := io.WriteString(dst, body)
+	return err
+}
+
+// staticOKHandler always answers 200 -- no snapshot state, no collection state,
+// nothing that can make it fail. /livez and /readyz both use it: a probe wired
+// here can never be the reason a healthy process gets restarted or pulled from
+// rotation. /health remains the endpoint for anything that wants to know whether
+// collection is actually current.
+func staticOKHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 // indexPage is parsed once at package init. Rendered through html/template
@@ -169,9 +224,34 @@ func startServer(addr string, handler http.Handler) (*http.Server, net.Listener,
 func startServing(ctx context.Context, cfg *config.Config, reg *prometheus.Registry, store *kemp.SnapshotStore, loop *kemp.CollectionLoop) (*http.Server, net.Listener, error) {
 	mux := http.NewServeMux()
 	mux.Handle(cfg.Server.URI, metricsHandler(reg))
-	// Health tolerates two missed cycles before reporting stale.
-	mux.Handle("/health", healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout))
-	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
+
+	// routes is registered FROM config.ReservedURIs, not alongside it: the two
+	// length/lookup checks below mean a route added here without a matching
+	// entry in config.ReservedURIs, or a pattern reserved there without a
+	// handler here, fails startServing loudly instead of silently drifting
+	// back into the mux-conflict panic config.ReservedURIs exists to prevent.
+	routes := map[string]http.Handler{
+		// Health tolerates two missed cycles before reporting stale. It always
+		// answers 200; the staleness verdict is in the body (see healthHandler).
+		"/health": healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout),
+		// Fixed probe paths, both wired to a handler that reads nothing and
+		// cannot fail. Deliberately NOT /metrics: rendering the full exposition
+		// on every probe tick is needless load and can block behind a slow
+		// collection cycle.
+		"/livez":  http.HandlerFunc(staticOKHandler),
+		"/readyz": http.HandlerFunc(staticOKHandler),
+		"/":       indexHandler(cfg.Server.URI),
+	}
+	if len(routes) != len(config.ReservedURIs) {
+		return nil, nil, fmt.Errorf("startServing: %d routes registered but %d URIs reserved in config.ReservedURIs; the two lists have drifted apart", len(routes), len(config.ReservedURIs))
+	}
+	for pattern := range config.ReservedURIs {
+		h, ok := routes[pattern]
+		if !ok {
+			return nil, nil, fmt.Errorf("startServing: reserved URI %q has no handler registered", pattern)
+		}
+		mux.Handle(pattern, h)
+	}
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 

@@ -20,18 +20,33 @@ make cli
 export KEMP1_HOSTNAME='lm-prod-01.example.com'
 export KEMP1_APIKEY='your-read-only-api-key'
 ./bin/kemp_exporter --config config.yaml
-# metrics: http://localhost:9447/metrics
+# metrics: http://localhost:9448/metrics
 ```
 
 ## Container image
 
 ```bash
 make docker
-docker run -p 9447:9447 \
+docker run -p 9448:9448 \
   -e KEMP1_HOSTNAME='lm-prod-01.example.com' \
   -e KEMP1_APIKEY='your-read-only-api-key' \
   kemp_exporter:dev
 ```
+
+## Health and probe endpoints
+
+| Path | Always 200? | Use it for |
+|---|---|---|
+| `/livez` | yes | Liveness probes. Reads no exporter state; cannot fail. |
+| `/readyz` | yes | Readiness probes. Same handler as `/livez`. |
+| `/health` | yes | Diagnostics. The body reports `ok`, `starting: …`, or `stale: last collection Ns ago`. |
+
+Point orchestrator probes at `/livez` and `/readyz`, never at `/metrics` —
+rendering the full exposition on every probe tick is needless load and can block
+behind a slow collection cycle. `/health` never returns a failure status: whether a
+LoadMaster is actually reachable is answered by the `kemp_up` metric and by the
+`/health` body, not by an HTTP status code that would get a healthy process
+restarted. See [ADR 0009](docs/adr/0009-always-200-probes-and-port-9448.md).
 
 ## Configuration
 

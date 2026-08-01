@@ -69,11 +69,18 @@ leave this option unset (or `false`). The minimum negotiated TLS version is 1.2.
 
 ### Exposed Endpoints
 
-The exporter exposes only two HTTP endpoints:
+The exporter registers five HTTP endpoints:
 
-- `/metrics` — Prometheus metrics (read-only, no write path).
-- `/health` — liveness/readiness probe (reports whether the exporter has
-  completed at least one collection cycle; no sensitive data).
+- `/metrics` (path configurable via `server.uri`) — Prometheus metrics
+  (read-only, no write path).
+- `/livez` and `/readyz` — static, always-`200` liveness/readiness probes.
+  They read no exporter state and cannot fail; point orchestrator probes at
+  these, not at `/health` (see
+  [ADR 0009](docs/adr/0009-always-200-probes-and-port-9448.md)).
+- `/health` — human/dashboard diagnostic endpoint. Always answers `200`, with
+  the collection-freshness verdict (`ok`, `starting: …`, `stale: …`) in the
+  body; no sensitive data.
+- `/` — landing page linking to the metrics endpoint.
 
 There is no authentication on these endpoints by default. If your environment
 requires it, place the exporter behind a reverse proxy or use Prometheus's

@@ -127,7 +127,7 @@ docker compose up --build
 docker compose -f docker-compose.ghcr.yml up
 ```
 
-The exporter metrics are at <http://localhost:9447/metrics>; Grafana at
+The exporter metrics are at <http://localhost:9448/metrics>; Grafana at
 <http://localhost:3000> (`admin` / `admin` by default — see `docs/deployment/docker.md`).
 
 ## Pull Request Checklist

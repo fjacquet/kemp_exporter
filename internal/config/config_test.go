@@ -29,8 +29,8 @@ systems:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Server.Port != "9447" {
-		t.Errorf("Server.Port = %q, want \"9447\"", cfg.Server.Port)
+	if cfg.Server.Port != "9448" {
+		t.Errorf("Server.Port = %q, want \"9448\"", cfg.Server.Port)
 	}
 	if cfg.Server.URI != "/metrics" {
 		t.Errorf("Server.URI = %q, want \"/metrics\"", cfg.Server.URI)
@@ -227,7 +227,7 @@ systems:
 // parser rejects (a '{' wildcard segment, or whitespace, which ServeMux reads
 // as a method prefix). Load must reject all of these itself, naming the field.
 func TestLoadRejectsUnusableServerURI(t *testing.T) {
-	for _, uri := range []string{"/health", "/met{rics", "/a b", "/a\tb", "/metrics/{id}", "/met}rics"} {
+	for _, uri := range []string{"/health", "/livez", "/readyz", "/met{rics", "/a b", "/a\tb", "/metrics/{id}", "/met}rics"} {
 		t.Run(uri, func(t *testing.T) {
 			path := writeConfig(t, `
 server:

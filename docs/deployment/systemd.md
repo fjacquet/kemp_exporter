@@ -40,7 +40,14 @@ even without an explicit `reload`.
 Curl the metrics endpoint locally to confirm it's serving:
 
 ```bash
-curl -s http://localhost:9447/metrics | grep kemp_exporter_build_info
+curl -s http://localhost:9448/metrics | grep kemp_exporter_build_info
+```
+
+The probe endpoints answer on the same port and never fail:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9448/livez   # 200
+curl -s http://localhost:9448/health                                    # ok | starting: … | stale: …
 ```
 
 ## Harden
