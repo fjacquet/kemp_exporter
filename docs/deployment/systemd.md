@@ -40,7 +40,7 @@ even without an explicit `reload`.
 Curl the metrics endpoint locally to confirm it's serving:
 
 ```bash
-curl -s http://localhost:9447/metrics | grep kemp_exporter_build_info
+curl -s http://localhost:9448/metrics | grep kemp_exporter_build_info
 ```
 
 ## Harden

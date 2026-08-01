@@ -11,7 +11,7 @@ This brings up three services:
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
-| `kemp_exporter` | built from this repo's `Dockerfile` | `9447` | `/metrics` |
+| `kemp_exporter` | built from this repo's `Dockerfile` | `9448` | `/metrics` |
 | `prometheus` | `prom/prometheus:latest` | `9090` | scrapes the exporter, loads `deploy/prometheus/kemp.rules.yml` |
 | `grafana` | `grafana/grafana:latest` | `3000` | auto-provisioned datasource + `Kemp LoadMaster — Overview` dashboard |
 
@@ -46,7 +46,7 @@ single-target quickstart's credentials.
 
 ```bash
 make docker
-docker run -p 9447:9447 \
+docker run -p 9448:9448 \
   -e KEMP1_HOSTNAME='lm-prod-01.example.com' \
   -e KEMP1_APIKEY='your-read-only-api-key' \
   kemp_exporter:dev

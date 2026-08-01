@@ -1,7 +1,7 @@
 ---
 server:
   host: "0.0.0.0"
-  port: "9447"
+  port: "9448"
   uri: "/metrics"
   logName: ""            # "" -> stdout
 collection:

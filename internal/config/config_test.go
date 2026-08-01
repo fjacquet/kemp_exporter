@@ -29,8 +29,8 @@ systems:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Server.Port != "9447" {
-		t.Errorf("Server.Port = %q, want \"9447\"", cfg.Server.Port)
+	if cfg.Server.Port != "9448" {
+		t.Errorf("Server.Port = %q, want \"9448\"", cfg.Server.Port)
 	}
 	if cfg.Server.URI != "/metrics" {
 		t.Errorf("Server.URI = %q, want \"/metrics\"", cfg.Server.URI)

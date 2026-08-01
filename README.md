@@ -20,14 +20,14 @@ make cli
 export KEMP1_HOSTNAME='lm-prod-01.example.com'
 export KEMP1_APIKEY='your-read-only-api-key'
 ./bin/kemp_exporter --config config.yaml
-# metrics: http://localhost:9447/metrics
+# metrics: http://localhost:9448/metrics
 ```
 
 ## Container image
 
 ```bash
 make docker
-docker run -p 9447:9447 \
+docker run -p 9448:9448 \
   -e KEMP1_HOSTNAME='lm-prod-01.example.com' \
   -e KEMP1_APIKEY='your-read-only-api-key' \
   kemp_exporter:dev

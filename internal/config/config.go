@@ -237,7 +237,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if cfg.Server.Port == "" {
-		cfg.Server.Port = "9447"
+		cfg.Server.Port = "9448"
 	}
 	if cfg.Server.URI == "" {
 		cfg.Server.URI = "/metrics"

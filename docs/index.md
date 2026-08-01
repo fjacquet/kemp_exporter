@@ -16,7 +16,7 @@ make cli
 export KEMP1_HOSTNAME='lm-prod-01.example.com'
 export KEMP1_APIKEY='your-read-only-api-key'
 ./bin/kemp_exporter --config config.yaml
-# metrics: http://localhost:9447/metrics
+# metrics: http://localhost:9448/metrics
 ```
 
 ## Where to go next
