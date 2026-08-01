@@ -101,6 +101,16 @@ func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler
 	})
 }
 
+// staticOKHandler always answers 200 -- no snapshot state, no collection state,
+// nothing that can make it fail. /livez and /readyz both use it: a probe wired
+// here can never be the reason a healthy process gets restarted or pulled from
+// rotation. /health remains the endpoint for anything that wants to know whether
+// collection is actually current.
+func staticOKHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
 // indexPage is parsed once at package init. Rendered through html/template
 // (contextual auto-escaping), rather than a raw w.Write of a hand-built string,
 // even though metricsURI is operator-configured rather than attacker-controlled:
@@ -181,8 +191,14 @@ func startServer(addr string, handler http.Handler) (*http.Server, net.Listener,
 func startServing(ctx context.Context, cfg *config.Config, reg *prometheus.Registry, store *kemp.SnapshotStore, loop *kemp.CollectionLoop) (*http.Server, net.Listener, error) {
 	mux := http.NewServeMux()
 	mux.Handle(cfg.Server.URI, metricsHandler(reg))
-	// Health tolerates two missed cycles before reporting stale.
+	// Health tolerates two missed cycles before reporting stale. It always
+	// answers 200; the staleness verdict is in the body (see healthHandler).
 	mux.Handle("/health", healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout))
+	// Fixed probe paths, both wired to a handler that reads nothing and cannot
+	// fail. Deliberately NOT /metrics: rendering the full exposition on every
+	// probe tick is needless load and can block behind a slow collection cycle.
+	mux.HandleFunc("/livez", staticOKHandler)
+	mux.HandleFunc("/readyz", staticOKHandler)
 	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port

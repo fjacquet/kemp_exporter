@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -244,6 +245,66 @@ func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 	}
 	if !strings.Contains(body, "stale") {
 		t.Errorf("stale-snapshot body = %q, want it to report %q", body, "stale")
+	}
+}
+
+// /livez and /readyz must answer 200 before any collection cycle has completed,
+// and they must be wired into the mux startServing actually builds -- calling
+// staticOKHandler directly would pass even if nobody registered it, which is
+// exactly the regression worth guarding. /health is checked here too, for the
+// same wiring reason.
+//
+// Never probe /metrics instead: rendering the full exposition on every probe tick
+// is needless load, and it can block behind a slow collection cycle -- which is
+// the failure these endpoints exist to be immune to.
+func TestProbeEndpointsAlwaysOKBeforeFirstCollection(t *testing.T) {
+	store := kemp.NewSnapshotStore()
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(kemp.NewPromCollector(store)); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	// A deliberately slow first collection: the probes must answer while it is
+	// still in flight, not merely after it finishes.
+	slow := &kemp.MockClient{
+		SystemName: "lm-01",
+		Stats:      &models.Statistics{},
+		StatsDelay: 300 * time.Millisecond,
+	}
+	loop := kemp.NewCollectionLoop([]kemp.Client{slow}, config.Collection{
+		Interval:      time.Hour,
+		Timeout:       2 * time.Second,
+		MaxConcurrent: 1,
+	}, store)
+
+	cfg := &config.Config{Server: config.Server{Host: "127.0.0.1", Port: "0", URI: "/metrics"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv, ln, err := startServing(ctx, cfg, reg, store, loop)
+	if err != nil {
+		t.Fatalf("startServing: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	for _, path := range []string{"/livez", "/readyz", "/health"} {
+		resp, err := http.Get("http://" + ln.Addr().String() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		code := resp.StatusCode
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("read %s body: %v", path, readErr)
+		}
+		if code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200 before the first collection cycle", path, code)
+		}
+		if strings.Contains(string(bodyBytes), "<html>") {
+			t.Errorf("GET %s served the index landing page: the route is not registered", path)
+		}
 	}
 }
 
