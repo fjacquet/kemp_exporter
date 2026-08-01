@@ -95,11 +95,20 @@ func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler
 				time.Since(snap.BuiltAt).Round(time.Second))
 		}
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte(body)); err != nil {
+		// Rendered through html/template, like indexPage below, rather than a raw
+		// w.Write of a computed string: that is what keeps this handler off
+		// semgrep's no-direct-write-to-responsewriter rule, which exists to stop
+		// unescaped bytes reaching the response regardless of whether the
+		// interpolated value (here, a snapshot age) is attacker-controlled.
+		if err := healthBodyTemplate.Execute(w, body); err != nil {
 			logrus.WithError(err).Debug("health response write failed")
 		}
 	})
 }
+
+// healthBodyTemplate renders healthHandler's plain-text body through
+// html/template instead of a raw w.Write -- see healthHandler's comment.
+var healthBodyTemplate = template.Must(template.New("health").Parse(`{{.}}`))
 
 // staticOKHandler always answers 200 -- no snapshot state, no collection state,
 // nothing that can make it fail. /livez and /readyz both use it: a probe wired
