@@ -11,7 +11,7 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/kemp_exporter .
 
 # Runtime stage
-FROM alpine:3.22
+FROM alpine:3.24
 # Copy the CA bundle from the builder rather than `apk add ca-certificates`:
 # apk fetches the index from the Alpine CDN over TLS, which fails behind a corporate
 # MITM proxy because the bare alpine image has no CA bundle yet to validate the proxy
