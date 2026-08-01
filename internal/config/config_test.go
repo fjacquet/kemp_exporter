@@ -227,7 +227,7 @@ systems:
 // parser rejects (a '{' wildcard segment, or whitespace, which ServeMux reads
 // as a method prefix). Load must reject all of these itself, naming the field.
 func TestLoadRejectsUnusableServerURI(t *testing.T) {
-	for _, uri := range []string{"/health", "/met{rics", "/a b", "/a\tb", "/metrics/{id}", "/met}rics"} {
+	for _, uri := range []string{"/health", "/livez", "/readyz", "/met{rics", "/a b", "/a\tb", "/metrics/{id}", "/met}rics"} {
 		t.Run(uri, func(t *testing.T) {
 			path := writeConfig(t, `
 server:

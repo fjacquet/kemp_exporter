@@ -109,6 +109,8 @@ func readSecretFile(path string) (string, error) {
 var reservedURIs = map[string]string{
 	"/":       "the landing page",
 	"/health": "the health endpoint",
+	"/livez":  "the liveness probe",
+	"/readyz": "the readiness probe",
 }
 
 // validateServerURI rejects every server.uri value that http.ServeMux would reject
