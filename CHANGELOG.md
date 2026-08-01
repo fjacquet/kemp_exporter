@@ -10,6 +10,8 @@ section rather than letting it accumulate indefinitely.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-01
+
 ### Breaking
 
 - The default metrics port moves from `9447` to `9448`. `kemp_exporter` and
