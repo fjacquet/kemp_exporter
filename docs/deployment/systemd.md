@@ -43,6 +43,13 @@ Curl the metrics endpoint locally to confirm it's serving:
 curl -s http://localhost:9448/metrics | grep kemp_exporter_build_info
 ```
 
+The probe endpoints answer on the same port and never fail:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9448/livez   # 200
+curl -s http://localhost:9448/health                                    # ok | starting: … | stale: …
+```
+
 ## Harden
 
 `deploy/kemp_exporter.service` already applies a restrictive sandbox by default:

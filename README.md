@@ -33,6 +33,21 @@ docker run -p 9448:9448 \
   kemp_exporter:dev
 ```
 
+## Health and probe endpoints
+
+| Path | Always 200? | Use it for |
+|---|---|---|
+| `/livez` | yes | Liveness probes. Reads no exporter state; cannot fail. |
+| `/readyz` | yes | Readiness probes. Same handler as `/livez`. |
+| `/health` | yes | Diagnostics. The body reports `ok`, `starting: …`, or `stale: last collection Ns ago`. |
+
+Point orchestrator probes at `/livez` and `/readyz`, never at `/metrics` —
+rendering the full exposition on every probe tick is needless load and can block
+behind a slow collection cycle. `/health` never returns a failure status: whether a
+LoadMaster is actually reachable is answered by the `kemp_up` metric and by the
+`/health` body, not by an HTTP status code that would get a healthy process
+restarted. See [ADR 0009](docs/adr/0009-always-200-probes-and-port-9448.md).
+
 ## Configuration
 
 See `config.yaml` for the full schema: server, collection interval/timeout/concurrency,

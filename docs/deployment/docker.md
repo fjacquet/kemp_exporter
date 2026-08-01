@@ -52,6 +52,23 @@ docker run -p 9448:9448 \
   kemp_exporter:dev
 ```
 
+## Container healthcheck
+
+Both images declare a `HEALTHCHECK` that probes `http://127.0.0.1:9448/livez`
+every 30s (5s timeout, 10s start period, 3 retries), and both compose files
+declare the identical check. `docker ps` therefore reports the exporter's health
+directly:
+
+```bash
+docker inspect --format='{{.State.Health.Status}}' kemp_exporter
+```
+
+`/livez` reads no exporter state, so a `healthy` container means the process is
+serving HTTP — **not** that any LoadMaster is reachable. That question is answered
+by `kemp_up` and by the `/health` response body. The check deliberately uses
+`127.0.0.1` rather than `localhost`: busybox `wget` resolves `localhost` via `::1`
+first and the exporter binds IPv4 only.
+
 ## GHCR variant (published image, no local build)
 
 ```bash
