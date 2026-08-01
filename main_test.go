@@ -248,6 +248,33 @@ func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 	}
 }
 
+// renderHealthBody must never escape its input: the /health body is
+// text/plain, and today's three possible bodies ("ok\n", "starting: …\n", and a
+// time.Duration.String()) happen to contain no escapable characters, so a
+// regression to routing this body through html/template would pass every
+// other test in this file while still corrupting the response the moment a
+// future body carries a hostname, target URL, or wrapped err.Error()
+// containing "&" or "<". This test feeds exactly that shape of value -- an
+// error message embedding a host:port -- through the same call healthHandler
+// uses, and asserts the raw characters survive rather than coming back as
+// "&amp;"/"&lt;".
+func TestRenderHealthBodyDoesNotEscape(t *testing.T) {
+	body := "stale: dial tcp lm&prod<01>:443 failed\n"
+
+	var buf strings.Builder
+	if err := renderHealthBody(&buf, body); err != nil {
+		t.Fatalf("renderHealthBody: %v", err)
+	}
+
+	got := buf.String()
+	if got != body {
+		t.Errorf("renderHealthBody wrote %q, want the raw input %q unescaped", got, body)
+	}
+	if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") || strings.Contains(got, "&gt;") {
+		t.Errorf("renderHealthBody produced HTML entities in a text/plain body: %q", got)
+	}
+}
+
 // /livez and /readyz must answer 200 before any collection cycle has completed,
 // and they must be wired into the mux startServing actually builds -- calling
 // staticOKHandler directly would pass even if nobody registered it, which is

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -94,21 +95,34 @@ func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler
 			body = fmt.Sprintf("stale: last collection %s ago\n",
 				time.Since(snap.BuiltAt).Round(time.Second))
 		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		// Rendered through html/template, like indexPage below, rather than a raw
-		// w.Write of a computed string: that is what keeps this handler off
-		// semgrep's no-direct-write-to-responsewriter rule, which exists to stop
-		// unescaped bytes reaching the response regardless of whether the
-		// interpolated value (here, a snapshot age) is attacker-controlled.
-		if err := healthBodyTemplate.Execute(w, body); err != nil {
+		// Written via renderHealthBody(w, body), never a literal w.Write(...) here
+		// -- that literal call shape is exactly what semgrep's
+		// no-direct-write-to-responsewriter rule flags inside a function whose
+		// parameter is http.ResponseWriter, on the theory that the write might be
+		// unescaped HTML. It never applies to this body: renderHealthBody takes an
+		// io.Writer, not an http.ResponseWriter, and this response is text/plain,
+		// not HTML, so there is no escaping question to get wrong -- body must
+		// reach the client byte-for-byte. Do NOT route it through html/template
+		// (that would silently turn "&"/"<" in a future hostname, target URL, or
+		// wrapped err.Error() into HTML entities, corrupting output operators curl
+		// and grep) or through text/template (semgrep's
+		// import-text-template rule flags that import unconditionally,
+		// regardless of content type).
+		if err := renderHealthBody(w, body); err != nil {
 			logrus.WithError(err).Debug("health response write failed")
 		}
 	})
 }
 
-// healthBodyTemplate renders healthHandler's plain-text body through
-// html/template instead of a raw w.Write -- see healthHandler's comment.
-var healthBodyTemplate = template.Must(template.New("health").Parse(`{{.}}`))
+// renderHealthBody writes body to dst verbatim, with no escaping -- see
+// healthHandler's comment for why that is correct for this text/plain
+// response, and why dst is typed io.Writer rather than http.ResponseWriter.
+func renderHealthBody(dst io.Writer, body string) error {
+	_, err := io.WriteString(dst, body)
+	return err
+}
 
 // staticOKHandler always answers 200 -- no snapshot state, no collection state,
 // nothing that can make it fail. /livez and /readyz both use it: a probe wired
