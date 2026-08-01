@@ -248,16 +248,13 @@ func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 	}
 }
 
-// renderHealthBody must never escape its input: the /health body is
-// text/plain, and today's three possible bodies ("ok\n", "starting: …\n", and a
-// time.Duration.String()) happen to contain no escapable characters, so a
-// regression to routing this body through html/template would pass every
-// other test in this file while still corrupting the response the moment a
-// future body carries a hostname, target URL, or wrapped err.Error()
-// containing "&" or "<". This test feeds exactly that shape of value -- an
-// error message embedding a host:port -- through the same call healthHandler
-// uses, and asserts the raw characters survive rather than coming back as
-// "&amp;"/"&lt;".
+// renderHealthBody itself must never escape its input -- it is a thin
+// io.WriteString wrapper, so this only proves that primitive copies bytes
+// verbatim; it does NOT exercise healthHandler or the call site's choice of
+// renderHealthBody over html/template, since it never calls healthHandler.
+// TestHealthHandlerBodyIsWrittenVerbatim below is the test that guards the
+// call site: it drives healthHandler itself and would fail if that call site
+// regressed to routing the body through html/template.
 func TestRenderHealthBodyDoesNotEscape(t *testing.T) {
 	body := "stale: dial tcp lm&prod<01>:443 failed\n"
 
@@ -272,6 +269,56 @@ func TestRenderHealthBodyDoesNotEscape(t *testing.T) {
 	}
 	if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") || strings.Contains(got, "&gt;") {
 		t.Errorf("renderHealthBody produced HTML entities in a text/plain body: %q", got)
+	}
+}
+
+// TestHealthHandlerBodyIsWrittenVerbatim drives healthHandler itself -- not
+// renderHealthBody in isolation -- across all three freshness states, and
+// asserts both the exact Content-Type header (untested until now) and that
+// the response body is byte-identical to healthBody's own output, with no
+// HTML entities anywhere in it.
+//
+// This is the test that actually guards main.go's call-site choice of
+// renderHealthBody over html/template: verified by temporarily swapping that
+// call site to route through html/template (and, since today's three bodies
+// contain nothing escapable, temporarily giving the "ok" body a stray '<' to
+// give escaping something to bite on) -- the byte-identical comparison below
+// failed as expected, then passed again once both changes were reverted.
+func TestHealthHandlerBodyIsWrittenVerbatim(t *testing.T) {
+	maxAge := time.Minute
+
+	cases := []struct {
+		name string
+		snap *kemp.Snapshot
+	}{
+		{"starting", &kemp.Snapshot{}},
+		{"ok", &kemp.Snapshot{BuiltAt: time.Now()}},
+		{"stale", &kemp.Snapshot{BuiltAt: time.Now().Add(-10 * time.Minute)}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := kemp.NewSnapshotStore()
+			store.Store(tc.snap)
+			h := healthHandler(store, maxAge)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+			if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want %q", ct, "text/plain; charset=utf-8")
+			}
+
+			want := healthBody(tc.snap, maxAge)
+			got := rec.Body.String()
+			if got != want {
+				t.Errorf("body = %q, want healthBody's own output %q written verbatim", got, want)
+			}
+			if strings.Contains(got, "&amp;") || strings.Contains(got, "&lt;") ||
+				strings.Contains(got, "&gt;") || strings.Contains(got, "&#") {
+				t.Errorf("body contains HTML entities in a text/plain response: %q", got)
+			}
+		})
 	}
 }
 

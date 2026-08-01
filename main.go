@@ -69,6 +69,23 @@ func metricsHandler(reg *prometheus.Registry) http.Handler {
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 }
 
+// healthBody computes the /health response text from snap's freshness relative
+// to maxAge. Split out from healthHandler so tests can compute the expected
+// body directly, from the same code the handler runs, rather than duplicating
+// the three message strings by hand -- a duplicate copy drifts silently the
+// next time a message changes, while calling this function cannot.
+func healthBody(snap *kemp.Snapshot, maxAge time.Duration) string {
+	switch {
+	case snap.BuiltAt.IsZero():
+		return "starting: no collection cycle has completed yet\n"
+	case time.Since(snap.BuiltAt) > maxAge:
+		return fmt.Sprintf("stale: last collection %s ago\n",
+			time.Since(snap.BuiltAt).Round(time.Second))
+	default:
+		return "ok\n"
+	}
+}
+
 // healthHandler reports collection freshness from snapshot AGE, deliberately
 // independent of kemp_up. kemp_up describes the backend; a wedged collection loop
 // would leave it at a stale 1 forever, so staleness is the only honest freshness
@@ -86,22 +103,15 @@ func metricsHandler(reg *prometheus.Registry) http.Handler {
 // matters.
 func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		snap := store.Load()
-		body := "ok\n"
-		switch {
-		case snap.BuiltAt.IsZero():
-			body = "starting: no collection cycle has completed yet\n"
-		case time.Since(snap.BuiltAt) > maxAge:
-			body = fmt.Sprintf("stale: last collection %s ago\n",
-				time.Since(snap.BuiltAt).Round(time.Second))
-		}
+		body := healthBody(store.Load(), maxAge)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		// Written via renderHealthBody(w, body), never a literal w.Write(...) here
-		// -- that literal call shape is exactly what semgrep's
-		// no-direct-write-to-responsewriter rule flags inside a function whose
+		// Written via renderHealthBody(w, body), never a literal w.Write(...) or
+		// inline io.WriteString(w, body) here -- both of those call shapes are
+		// exactly what semgrep's no-direct-write-to-responsewriter and
+		// no-io-writestring-to-responsewriter rules flag inside a function whose
 		// parameter is http.ResponseWriter, on the theory that the write might be
-		// unescaped HTML. It never applies to this body: renderHealthBody takes an
+		// unescaped HTML. Neither applies to this body: renderHealthBody takes an
 		// io.Writer, not an http.ResponseWriter, and this response is text/plain,
 		// not HTML, so there is no escaping question to get wrong -- body must
 		// reach the client byte-for-byte. Do NOT route it through html/template
