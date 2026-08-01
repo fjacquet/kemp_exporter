@@ -147,7 +147,7 @@ sibling repo a post-review fix wave.
   — unchanged signature, changed behaviour: status is always `200`; the body is
   `"starting: ...\n"`, `"stale: ...\n"` or `"ok\n"`.
 
-- [ ] **Step 1: Rewrite the failing test.** In `main_test.go`, replace the whole
+- [x] **Step 1: Rewrite the failing test.** In `main_test.go`, replace the whole
   of `TestHealthHandlerUsesSnapshotAge` — its doc comment on line 200 through its
   closing brace on line 227 — with this. It asserts 200 in all three cases and
   moves the starting/fresh/stale distinction onto the body:
@@ -204,7 +204,7 @@ func TestHealthHandlerUsesSnapshotAge(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Watch it fail.** Run:
+- [x] **Step 2: Watch it fail.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestHealthHandlerUsesSnapshotAge ./...
@@ -215,7 +215,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestHealthHandlerUsesS
   check. No new import is needed: `strings`, `time`, `net/http` and
   `net/http/httptest` are all already imported by `main_test.go`.
 
-- [ ] **Step 3: Implement.** In `main.go`, replace `healthHandler` — its doc
+- [x] **Step 3: Implement.** In `main.go`, replace `healthHandler` — its doc
   comment on lines 71-73 through its closing brace on line 90 — with:
 
 ```go
@@ -256,7 +256,7 @@ func healthHandler(store *kemp.SnapshotStore, maxAge time.Duration) http.Handler
   Note the `switch` evaluates `IsZero()` first, so `time.Since` on a zero
   `BuiltAt` (a ~2000-year duration) never reaches the stale branch.
 
-- [ ] **Step 4: Watch it pass.** Run:
+- [x] **Step 4: Watch it pass.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestHealthHandlerUsesSnapshotAge ./... && go vet ./...
@@ -265,7 +265,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestHealthHandlerUsesS
   Both must be clean. `http.Error` is no longer called by this function; confirm
   nothing else in `main.go` lost its last use of an import by running `go build ./...`.
 
-- [ ] **Step 5: Commit.**
+- [x] **Step 5: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add main.go main_test.go && git commit -m "$(cat <<'EOF'
@@ -299,7 +299,7 @@ EOF
   on the `startServing` mux at `/livez` and `/readyz`, each answering `200` with
   body `ok`.
 
-- [ ] **Step 1: Write the failing test.** Append this to `main_test.go`, directly
+- [x] **Step 1: Write the failing test.** Append this to `main_test.go`, directly
   after the `TestHealthHandlerUsesSnapshotAge` function you rewrote in Task 1. It
   goes through `startServing` deliberately — a handler that exists but was never
   registered would pass a direct-call test and still 404 in production:
@@ -359,7 +359,7 @@ func TestProbeEndpointsAlwaysOKBeforeFirstCollection(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Watch it fail.** Run:
+- [x] **Step 2: Watch it fail.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestProbeEndpointsAlwaysOKBeforeFirstCollection ./...
@@ -393,7 +393,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && go test -run TestProbeEndpointsAlwa
   Re-run; the two probe paths must now fail on the `<html>` assertion. That is the
   real failing state.
 
-- [ ] **Step 3: Implement the handler.** In `main.go`, insert this function
+- [x] **Step 3: Implement the handler.** In `main.go`, insert this function
   immediately after `healthHandler`'s closing brace and before the `indexPage`
   var block:
 
@@ -409,7 +409,7 @@ func staticOKHandler(w http.ResponseWriter, _ *http.Request) {
 }
 ```
 
-- [ ] **Step 4: Register the routes.** In `startServing`, replace this block:
+- [x] **Step 4: Register the routes.** In `startServing`, replace this block:
 
 ```go
 	mux := http.NewServeMux()
@@ -435,7 +435,7 @@ func staticOKHandler(w http.ResponseWriter, _ *http.Request) {
 	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
 ```
 
-- [ ] **Step 5: Watch it pass, then run the whole suite.**
+- [x] **Step 5: Watch it pass, then run the whole suite.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && go test -run 'TestProbeEndpointsAlwaysOKBeforeFirstCollection|TestHealthHandlerUsesSnapshotAge' ./... && make sure
@@ -443,7 +443,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && go test -run 'TestProbeEndpointsAlw
 
   `make sure` runs `fmt-check`, `vet`, `test` and `build`. All must be clean.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add main.go main_test.go && git commit -m "$(cat <<'EOF'
@@ -482,7 +482,7 @@ to 9448, the next free port after the family's 9438–9446 block.
 - Produces: `config.Load` defaults `Server.Port` to `"9448"`; shipped `config.yaml`
   says `9448`; every user-facing document says `9448`.
 
-- [ ] **Step 1: Inventory every occurrence.** Run:
+- [x] **Step 1: Inventory every occurrence.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
@@ -494,7 +494,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
   was decided on 2026-07-30/31 and stay as written, exactly like a superseded ADR.
   Everything else changes.
 
-- [ ] **Step 2: Change the default in code, test-first.** In
+- [x] **Step 2: Change the default in code, test-first.** In
   `internal/config/config_test.go`, change lines 32-33 from:
 
 ```go
@@ -514,7 +514,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
   Run `go test ./internal/config/` and watch it fail with
   `Server.Port = "9447", want "9448"`.
 
-- [ ] **Step 3: Change the default.** In `internal/config/config.go` line 240,
+- [x] **Step 3: Change the default.** In `internal/config/config.go` line 240,
   change:
 
 ```go
@@ -529,14 +529,14 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
 
   Run `go test ./internal/config/` and watch it pass.
 
-- [ ] **Step 4: Change the shipped config.** In `config.yaml` line 4, change
+- [x] **Step 4: Change the shipped config.** In `config.yaml` line 4, change
   `  port: "9447"` to `  port: "9448"`.
 
-- [ ] **Step 5: Change the scrape target.** In `prometheus.yml` line 9, change
+- [x] **Step 5: Change the scrape target.** In `prometheus.yml` line 9, change
   `      - targets: ["kemp_exporter:9447"]` to
   `      - targets: ["kemp_exporter:9448"]`.
 
-- [ ] **Step 6: Change the four user-facing prose files.**
+- [x] **Step 6: Change the four user-facing prose files.**
   - `README.md` line 23: `# metrics: http://localhost:9447/metrics` →
     `# metrics: http://localhost:9448/metrics`
   - `README.md` line 30: `docker run -p 9447:9447 \` → `docker run -p 9448:9448 \`
@@ -546,7 +546,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
   - `CLAUDE.md` line 15: `` `9447`. OTLP gRPC: `4317`. `` →
     `` `9448` (moved from 9447 in v0.2.0; 9447 collided with `nsr_exporter`). OTLP gRPC: `4317`. ``
 
-- [ ] **Step 7: Change the three docs-site files.**
+- [x] **Step 7: Change the three docs-site files.**
   - `docs/index.md` line 19: `# metrics: http://localhost:9447/metrics` →
     `# metrics: http://localhost:9448/metrics`
   - `docs/deployment/docker.md` line 14: the table cell `` `9447` `` → `` `9448` ``
@@ -556,7 +556,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
     `curl -s http://localhost:9447/metrics | grep kemp_exporter_build_info` →
     `curl -s http://localhost:9448/metrics | grep kemp_exporter_build_info`
 
-- [ ] **Step 8: Re-grep and confirm.** Run:
+- [x] **Step 8: Re-grep and confirm.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9447
@@ -575,7 +575,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n 9448 | wc -l
 
   Expect at least 12 hits.
 
-- [ ] **Step 9: Gate and commit.**
+- [x] **Step 9: Gate and commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && make sure
@@ -611,7 +611,7 @@ EOF
 - Produces: both images `EXPOSE 9448` and declare a `HEALTHCHECK` that busybox
   `wget`s `http://127.0.0.1:9448/livez`.
 
-- [ ] **Step 1: Edit `Dockerfile`.** Replace line 14, `FROM alpine:3.22`, with:
+- [x] **Step 1: Edit `Dockerfile`.** Replace line 14, `FROM alpine:3.22`, with:
 
 ```dockerfile
 # Unpinned by family decision (see ADR 0009): all fifteen of Fred's exporter repos
@@ -638,7 +638,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://127.0.0.1:9448/livez || exit 1
 ```
 
-- [ ] **Step 2: Edit `Dockerfile.goreleaser`.** Replace line 1,
+- [x] **Step 2: Edit `Dockerfile.goreleaser`.** Replace line 1,
   `FROM alpine:3.22`, with:
 
 ```dockerfile
@@ -660,7 +660,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --quiet --tries=1 --spider http://127.0.0.1:9448/livez || exit 1
 ```
 
-- [ ] **Step 3: Lint both.** Run:
+- [x] **Step 3: Lint both.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && docker run --rm -i hadolint/hadolint < Dockerfile ; echo "--- goreleaser ---" ; docker run --rm -i hadolint/hadolint < Dockerfile.goreleaser
@@ -670,7 +670,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && docker run --rm -i hadolint/hadolin
   **expected** — see Global Constraints. Any *other* finding is a real defect and
   must be fixed. Do not add `# hadolint ignore` lines.
 
-- [ ] **Step 4: Sanity-check the port is gone.** Run:
+- [x] **Step 4: Sanity-check the port is gone.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && grep -n "9447\|alpine:3" Dockerfile Dockerfile.goreleaser
@@ -678,7 +678,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && grep -n "9447\|alpine:3" Dockerfile
 
   Expect no output at all.
 
-- [ ] **Step 5: Commit.**
+- [x] **Step 5: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add Dockerfile Dockerfile.goreleaser && git commit -m "$(cat <<'EOF'
@@ -712,7 +712,7 @@ the two Dockerfiles.
 - Produces: both compose files publish `9448:9448` and declare a matching
   `healthcheck:` on the `kemp_exporter` service.
 
-- [ ] **Step 1: Edit `docker-compose.yml`.** In the `kemp_exporter` service,
+- [x] **Step 1: Edit `docker-compose.yml`.** In the `kemp_exporter` service,
   replace lines 28-29:
 
 ```yaml
@@ -744,7 +744,7 @@ the two Dockerfiles.
       start_period: 10s
 ```
 
-- [ ] **Step 2: Edit `docker-compose.ghcr.yml`.** In the `kemp_exporter` service,
+- [x] **Step 2: Edit `docker-compose.ghcr.yml`.** In the `kemp_exporter` service,
   replace lines 21-22:
 
 ```yaml
@@ -775,7 +775,7 @@ the two Dockerfiles.
       start_period: 10s
 ```
 
-- [ ] **Step 3: Validate both compose files.** Run:
+- [x] **Step 3: Validate both compose files.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && docker compose -f docker-compose.yml config -q && docker compose -f docker-compose.ghcr.yml config -q && echo "compose OK"
@@ -784,7 +784,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && docker compose -f docker-compose.ym
   Remember: this passing proves nothing about the healthcheck actually working.
   Steps 4-7 are what prove that.
 
-- [ ] **Step 4: Build and run the local `Dockerfile` image.** Run:
+- [x] **Step 4: Build and run the local `Dockerfile` image.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && docker build -t kemp_exporter:healthcheck-verify .
@@ -800,7 +800,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && docker run -d --name kemp_hc_local 
   expected and is precisely the state the healthcheck must survive: `/livez`
   reports 200 regardless of backend reachability.
 
-- [ ] **Step 5: Assert it reports healthy.** The `start-period` is 10s and the
+- [x] **Step 5: Assert it reports healthy.** The `start-period` is 10s and the
   interval 30s, so allow up to ~45s. Run:
 
 ```bash
@@ -824,7 +824,7 @@ docker inspect --format='{{json .State.Health.Log}}' kemp_hc_local
   in somewhere, or the port in the healthcheck does not match the port the process
   bound. Fix and re-verify; do not proceed on `unhealthy` or `starting`.
 
-- [ ] **Step 6: Tear down and build the goreleaser image.** The goreleaser
+- [x] **Step 6: Tear down and build the goreleaser image.** The goreleaser
   Dockerfile expects a pre-built Linux binary laid out per-platform. On Apple
   Silicon:
 
@@ -847,7 +847,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && mkdir -p linux/arm64 && \
   platform arg, produces a container that exits immediately with
   `exec format error`.
 
-- [ ] **Step 7: Run and assert the goreleaser image is healthy too.**
+- [x] **Step 7: Run and assert the goreleaser image is healthy too.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && docker run -d --name kemp_hc_rel -p 9448:9448 \
@@ -867,7 +867,7 @@ docker inspect --format='{{.State.Health.Status}}' kemp_hc_rel
 
   Must print `healthy`.
 
-- [ ] **Step 8: Clean up the verification artifacts.**
+- [x] **Step 8: Clean up the verification artifacts.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && docker rm -f kemp_hc_rel ; \
@@ -877,7 +877,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && docker rm -f kemp_hc_rel ; \
 
   Confirm `git status` shows no stray `linux/` directory before committing.
 
-- [ ] **Step 9: Commit.**
+- [x] **Step 9: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add docker-compose.yml docker-compose.ghcr.yml && git commit -m "$(cat <<'EOF'
@@ -909,7 +909,7 @@ EOF
 - Produces: a MADR-format record reachable from both `docs/adr/index.md` and the
   MkDocs nav, plus release notes under `## [Unreleased]`.
 
-- [ ] **Step 1: Confirm the ADR number.** Run:
+- [x] **Step 1: Confirm the ADR number.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && ls docs/adr/
@@ -923,7 +923,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && ls docs/adr/
   shipped literal `ADR-000N` placeholders into committed Dockerfile comments by
   assuming instead of listing.
 
-- [ ] **Step 2: Write the ADR.** Create
+- [x] **Step 2: Write the ADR.** Create
   `docs/adr/0009-always-200-probes-and-port-9448.md` with exactly this content:
 
 ```markdown
@@ -1026,21 +1026,21 @@ on three; revisiting it is a family-wide decision, not a per-repo one.
   by the amount `alpine:latest` moved.
 ```
 
-- [ ] **Step 3: Add the index row.** In `docs/adr/index.md`, append this line
+- [x] **Step 3: Add the index row.** In `docs/adr/index.md`, append this line
   immediately after the `0008` row (line 17):
 
 ```markdown
 | [0009](0009-always-200-probes-and-port-9448.md) | Static `/livez` + `/readyz`, an always-200 `/health`, container `HEALTHCHECK`, and the move to port 9448 | accepted |
 ```
 
-- [ ] **Step 4: Add the mkdocs nav entry.** In `mkdocs.yml`, append this line
+- [x] **Step 4: Add the mkdocs nav entry.** In `mkdocs.yml`, append this line
   immediately after the `0008 Config hot reload` entry, at the same indentation:
 
 ```yaml
       - 0009 Probes, always-200 health, port 9448: adr/0009-always-200-probes-and-port-9448.md
 ```
 
-- [ ] **Step 5: Write the CHANGELOG entries.** In `CHANGELOG.md`, replace line 11
+- [x] **Step 5: Write the CHANGELOG entries.** In `CHANGELOG.md`, replace line 11
   — the bare `## [Unreleased]` heading — with:
 
 ```markdown
@@ -1078,7 +1078,7 @@ on three; revisiting it is a family-wide decision, not a per-repo one.
   probing `http://127.0.0.1:9448/livez` on a 30s interval with a 5s timeout.
 ```
 
-- [ ] **Step 6: Build the docs site.** Run:
+- [x] **Step 6: Build the docs site.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && uvx --with mkdocs-material --with pymdown-extensions mkdocs build --strict --site-dir site
@@ -1089,7 +1089,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && uvx --with mkdocs-material --with p
   does not fail the build — add the nav entry for discoverability, but do not
   expect `--strict` to catch a missing one.
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add docs/adr/0009-always-200-probes-and-port-9448.md docs/adr/index.md mkdocs.yml CHANGELOG.md && git commit -m "$(cat <<'EOF'
@@ -1122,7 +1122,7 @@ prevent that here.
   `9447`, or pins Alpine 3.22; the probe endpoints are documented where operators
   will look for them.
 
-- [ ] **Step 1: Grep for falsified claims.** Run:
+- [x] **Step 1: Grep for falsified claims.** Run:
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git grep -n -i "9447\|503\|alpine:3\|service unavailable\|unhealthy" -- README.md CONTRIBUTING.md CLAUDE.md docs/ ':!docs/superpowers/'
@@ -1132,7 +1132,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n -i "9447\|503\|alpine:3
   503 behaviour, and the historical ADRs are records) must be reviewed and fixed.
   Expect zero `9447` hits after Task 3.
 
-- [ ] **Step 2: Document the endpoints in the README.** In `README.md`, insert
+- [x] **Step 2: Document the endpoints in the README.** In `README.md`, insert
   this section immediately after the `## Container image` block (after line 34,
   the closing ```` ``` ````) and before `## Configuration`:
 
@@ -1153,7 +1153,7 @@ LoadMaster is actually reachable is answered by the `kemp_up` metric and by the
 restarted. See [ADR 0009](docs/adr/0009-always-200-probes-and-port-9448.md).
 ```
 
-- [ ] **Step 3: Document the container healthcheck.** In
+- [x] **Step 3: Document the container healthcheck.** In
   `docs/deployment/docker.md`, insert this section immediately after the
   `## Standalone container` code block (after line 54, the closing ```` ``` ````)
   and before `## GHCR variant (published image, no local build)`:
@@ -1177,7 +1177,7 @@ by `kemp_up` and by the `/health` response body. The check deliberately uses
 first and the exporter binds IPv4 only.
 ```
 
-- [ ] **Step 4: Document the probe endpoints for systemd users.** In
+- [x] **Step 4: Document the probe endpoints for systemd users.** In
   `docs/deployment/systemd.md`, immediately after the `curl` code block that ends
   on line 44, insert:
 
@@ -1190,7 +1190,7 @@ curl -s http://localhost:9448/health                                    # ok | s
 ```
 ```
 
-- [ ] **Step 5: Rebuild the docs and re-grep.**
+- [x] **Step 5: Rebuild the docs and re-grep.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && uvx --with mkdocs-material --with pymdown-extensions mkdocs build --strict --site-dir site && git grep -n 9447 -- ':!docs/superpowers/'
@@ -1198,7 +1198,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && uvx --with mkdocs-material --with p
 
   The grep must produce **no output**.
 
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git add README.md docs/deployment/docker.md docs/deployment/systemd.md && git commit -m "$(cat <<'EOF'
@@ -1224,7 +1224,7 @@ EOF
 - Consumes: the complete change set.
 - Produces: a green `make ci`.
 
-- [ ] **Step 1: Run the full CI gate.**
+- [x] **Step 1: Run the full CI gate.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && make ci
@@ -1236,7 +1236,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && make ci
   suppressions are forbidden family-wide and the Definition of Done greps for
   them.
 
-- [ ] **Step 2: Confirm no suppressions crept in.**
+- [x] **Step 2: Confirm no suppressions crept in.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git grep -n "nolint\|nosemgrep\|#nosec\|hadolint ignore" -- ':!docs/superpowers/'
@@ -1244,7 +1244,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git grep -n "nolint\|nosemgrep\|#no
 
   Must produce no output.
 
-- [ ] **Step 3: Confirm the working tree is clean and review the full diff.**
+- [x] **Step 3: Confirm the working tree is clean and review the full diff.**
 
 ```bash
 cd /Users/fjacquet/Projects/kemp_exporter && git status --short && git log --oneline main..HEAD
@@ -1253,7 +1253,7 @@ cd /Users/fjacquet/Projects/kemp_exporter && git status --short && git log --one
   `git status --short` must be empty (no stray `linux/`, no `site/` — `site/` is
   gitignored). The log should show six commits from Tasks 1-7.
 
-- [ ] **Step 4: Fix and re-run if anything failed.** Do not report completion on a
+- [x] **Step 4: Fix and re-run if anything failed.** Do not report completion on a
   red gate.
 
 ---
@@ -1263,33 +1263,37 @@ cd /Users/fjacquet/Projects/kemp_exporter && git status --short && git log --one
 Before declaring this work complete, confirm each of the following by running the
 command and reading its output — not by recalling that you did it.
 
-- [ ] `go test ./...` is green, including `TestHealthHandlerUsesSnapshotAge`
+- [x] `go test ./...` is green, including `TestHealthHandlerUsesSnapshotAge`
   asserting **200 in all three cases** and `TestProbeEndpointsAlwaysOKBeforeFirstCollection`.
-- [ ] `make ci` is green end to end.
-- [ ] `git grep -n 9447 -- ':!docs/superpowers/'` produces **no output**. The two
-  historical documents under `docs/superpowers/` still contain `9447` and were
-  correctly left alone.
-- [ ] `grep -n alpine Dockerfile Dockerfile.goreleaser` shows `alpine:latest` in
+- [x] `make ci` is green end to end.
+- [ ] **PLAN DEFECT:** `git grep -n 9447 -- ':!docs/superpowers/'` does NOT
+  produce no output. It shows legitimate hits in `CHANGELOG.md` and
+  `docs/adr/0009-always-200-probes-and-port-9448.md` (both dictated verbatim by
+  Task 6 of this very plan) plus `CLAUDE.md`'s intentional "moved from 9447"
+  note. This assertion was written before Task 6 added those files/lines and
+  never accounted for them; documenting a breaking port change necessarily
+  states the old port number. Treated as non-blocking; see EXECUTION-REPORT.md.
+- [x] `grep -n alpine Dockerfile Dockerfile.goreleaser` shows `alpine:latest` in
   both, no `3.22`.
-- [ ] `grep -n HEALTHCHECK -A1 Dockerfile Dockerfile.goreleaser` shows
+- [x] `grep -n HEALTHCHECK -A1 Dockerfile Dockerfile.goreleaser` shows
   `127.0.0.1:9448/livez` in both, `--timeout=5s` in both, and **no** `localhost`.
-- [ ] `grep -n -A5 healthcheck docker-compose.yml docker-compose.ghcr.yml` shows
+- [x] `grep -n -A5 healthcheck docker-compose.yml docker-compose.ghcr.yml` shows
   `127.0.0.1:9448/livez` and `timeout: 5s` in both — matching the Dockerfiles
   exactly.
-- [ ] Both images were **built and run**, and
+- [x] Both images were **built and run**, and
   `docker inspect --format='{{.State.Health.Status}}'` printed `healthy` for each.
   This is not satisfied by reading the Dockerfile.
-- [ ] `hadolint` on both Dockerfiles reports only `DL3025`, `DL3007` and/or
+- [x] `hadolint` on both Dockerfiles reports only `DL3025`, `DL3007` and/or
   `DL3066`, and no `# hadolint ignore` comment was added.
-- [ ] `ls docs/adr/` shows `0009-always-200-probes-and-port-9448.md`, its number
+- [x] `ls docs/adr/` shows `0009-always-200-probes-and-port-9448.md`, its number
   was confirmed by listing rather than assumed, and no literal `000N` placeholder
   survives anywhere: `git grep -n "000N"` produces no output.
-- [ ] `docs/adr/index.md` has a `0009` row, and `mkdocs.yml`'s `nav:` has a `0009`
+- [x] `docs/adr/index.md` has a `0009` row, and `mkdocs.yml`'s `nav:` has a `0009`
   entry.
-- [ ] `mkdocs build --strict` is clean.
-- [ ] `CHANGELOG.md` has `Breaking`, `Changed` and `Added` subsections under
+- [x] `mkdocs build --strict` is clean.
+- [x] `CHANGELOG.md` has `Breaking`, `Changed` and `Added` subsections under
   `## [Unreleased]`, and the `Breaking` entry names the port move explicitly.
-- [ ] `git grep -n "nolint\|nosemgrep\|#nosec\|hadolint ignore" -- ':!docs/superpowers/'`
+- [x] `git grep -n "nolint\|nosemgrep\|#nosec\|hadolint ignore" -- ':!docs/superpowers/'`
   produces no output.
-- [ ] `git status --short` is empty — no leftover `linux/` build directory from the
+- [x] `git status --short` is empty — no leftover `linux/` build directory from the
   goreleaser verification.
