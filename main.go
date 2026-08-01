@@ -214,15 +214,34 @@ func startServer(addr string, handler http.Handler) (*http.Server, net.Listener,
 func startServing(ctx context.Context, cfg *config.Config, reg *prometheus.Registry, store *kemp.SnapshotStore, loop *kemp.CollectionLoop) (*http.Server, net.Listener, error) {
 	mux := http.NewServeMux()
 	mux.Handle(cfg.Server.URI, metricsHandler(reg))
-	// Health tolerates two missed cycles before reporting stale. It always
-	// answers 200; the staleness verdict is in the body (see healthHandler).
-	mux.Handle("/health", healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout))
-	// Fixed probe paths, both wired to a handler that reads nothing and cannot
-	// fail. Deliberately NOT /metrics: rendering the full exposition on every
-	// probe tick is needless load and can block behind a slow collection cycle.
-	mux.HandleFunc("/livez", staticOKHandler)
-	mux.HandleFunc("/readyz", staticOKHandler)
-	mux.HandleFunc("/", indexHandler(cfg.Server.URI))
+
+	// routes is registered FROM config.ReservedURIs, not alongside it: the two
+	// length/lookup checks below mean a route added here without a matching
+	// entry in config.ReservedURIs, or a pattern reserved there without a
+	// handler here, fails startServing loudly instead of silently drifting
+	// back into the mux-conflict panic config.ReservedURIs exists to prevent.
+	routes := map[string]http.Handler{
+		// Health tolerates two missed cycles before reporting stale. It always
+		// answers 200; the staleness verdict is in the body (see healthHandler).
+		"/health": healthHandler(store, 2*cfg.Collection.Interval+cfg.Collection.Timeout),
+		// Fixed probe paths, both wired to a handler that reads nothing and
+		// cannot fail. Deliberately NOT /metrics: rendering the full exposition
+		// on every probe tick is needless load and can block behind a slow
+		// collection cycle.
+		"/livez":  http.HandlerFunc(staticOKHandler),
+		"/readyz": http.HandlerFunc(staticOKHandler),
+		"/":       indexHandler(cfg.Server.URI),
+	}
+	if len(routes) != len(config.ReservedURIs) {
+		return nil, nil, fmt.Errorf("startServing: %d routes registered but %d URIs reserved in config.ReservedURIs; the two lists have drifted apart", len(routes), len(config.ReservedURIs))
+	}
+	for pattern := range config.ReservedURIs {
+		h, ok := routes[pattern]
+		if !ok {
+			return nil, nil, fmt.Errorf("startServing: reserved URI %q has no handler registered", pattern)
+		}
+		mux.Handle(pattern, h)
+	}
 
 	addr := cfg.Server.Host + ":" + cfg.Server.Port
 

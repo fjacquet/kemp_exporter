@@ -101,12 +101,16 @@ func readSecretFile(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// reservedURIs are the mux patterns the exporter registers for itself. A
+// ReservedURIs are the mux patterns the exporter registers for itself. A
 // server.uri equal to one of them makes http.ServeMux panic on the second
 // registration ("pattern X conflicts with pattern X"), taking the process down at
-// startup. Kept next to the mux wiring's own list by this comment rather than by
-// import, because main owns the mux and config must not depend on main.
-var reservedURIs = map[string]string{
+// startup. Exported so main's startServing can build its mux FROM this map --
+// registering a route main forgets to reserve here, or reserving a pattern main
+// forgets to wire a handler for, both fail a length/lookup check in
+// startServing instead of silently drifting back into the panic this map
+// exists to prevent. config still imports nothing from main: only the
+// dependency's direction was fixed, not its owner.
+var ReservedURIs = map[string]string{
 	"/":       "the landing page",
 	"/health": "the health endpoint",
 	"/livez":  "the liveness probe",
@@ -123,7 +127,7 @@ var reservedURIs = map[string]string{
 //
 // The three panic classes, verified against net/http's pattern parser:
 //
-//   - a pattern the exporter already registers (see reservedURIs) -- a conflict
+//   - a pattern the exporter already registers (see ReservedURIs) -- a conflict
 //     panic; "/health" is a plausible operator choice, not just a typo;
 //   - a pattern containing '{' or '}' -- ServeMux reads those as wildcard segment
 //     delimiters and panics on anything it cannot parse as one ("/met{rics"). A
@@ -138,7 +142,7 @@ func validateServerURI(uri string) error {
 	if !strings.HasPrefix(uri, "/") {
 		return fmt.Errorf("server.uri: must start with '/', got %q", uri)
 	}
-	if what, ok := reservedURIs[uri]; ok {
+	if what, ok := ReservedURIs[uri]; ok {
 		return fmt.Errorf("server.uri: %q is reserved for %s; pick another path", uri, what)
 	}
 	if strings.ContainsAny(uri, "{}") {
