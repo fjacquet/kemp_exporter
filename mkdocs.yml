@@ -28,6 +28,7 @@ nav:
       - 0006 Label-key union invariant: adr/0006-label-key-union-invariant.md
       - 0007 Own dashboard, not Grafana 12160: adr/0007-own-dashboard-not-grafana-12160.md
       - 0008 Config hot reload: adr/0008-config-hot-reload.md
+      - 0009 Probes, always-200 health, port 9448: adr/0009-always-200-probes-and-port-9448.md
 
 extra:
   version: v0.1.0
