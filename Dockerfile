@@ -11,7 +11,12 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/kemp_exporter .
 
 # Runtime stage
-FROM alpine:3.22
+# Unpinned by family decision (see ADR 0009): all fifteen of Fred's exporter repos
+# share `alpine:latest`. This is the one input in this build whose contents can
+# change between two builds of the same commit -- the Go toolchain, the linters
+# and every GitHub Action are pinned per ADR 0001. Uniformity across the family was
+# chosen over reproducibility here; revisiting it is a family-wide decision.
+FROM alpine:latest
 # Copy the CA bundle from the builder rather than `apk add ca-certificates`:
 # apk fetches the index from the Alpine CDN over TLS, which fails behind a corporate
 # MITM proxy because the bare alpine image has no CA bundle yet to validate the proxy
@@ -21,6 +26,16 @@ RUN adduser -D -u 10001 kemp
 COPY --from=builder /out/kemp_exporter /usr/local/bin/kemp_exporter
 COPY config.yaml /etc/kemp_exporter/config.yaml
 USER 10001
-EXPOSE 9447
+EXPOSE 9448
+
+# Probes /livez, never /metrics: /livez reads no state and cannot block behind a
+# slow collection cycle, whereas rendering the full exposition every 30s just to
+# answer a healthcheck is pure waste.
+#
+# 127.0.0.1 and NOT localhost: busybox wget resolves localhost via ::1 first and
+# this exporter binds IPv4 only, so a localhost-based check fails at runtime with
+# connection refused -- while passing hadolint and `docker compose config`.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:9448/livez || exit 1
 ENTRYPOINT ["/usr/local/bin/kemp_exporter"]
 CMD ["--config", "/etc/kemp_exporter/config.yaml"]
