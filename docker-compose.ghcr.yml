@@ -19,12 +19,21 @@ services:
     container_name: kemp_exporter
     command: ["--config", "/etc/kemp_exporter/config.yaml"]
     ports:
-      - "9447:9447"
+      - "9448:9448"
     environment:
       - KEMP1_HOSTNAME=${KEMP1_HOSTNAME:-10.0.0.1}
       - KEMP1_APIKEY=${KEMP1_APIKEY:-replace-me}
     volumes:
       - ./config.yaml:/etc/kemp_exporter/config.yaml:ro
+    # Mirrors the image's own HEALTHCHECK exactly, timeout included. 127.0.0.1,
+    # never localhost -- busybox wget tries ::1 first and this exporter binds
+    # IPv4 only.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:9448/livez"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   prometheus:

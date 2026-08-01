@@ -26,7 +26,7 @@ services:
     container_name: kemp_exporter
     command: ["--config", "/etc/kemp_exporter/config.yaml"]
     ports:
-      - "9447:9447"
+      - "9448:9448"
     environment:
       # Placeholders — replace with a real, reachable LoadMaster before expecting
       # any virtual-service/real-server data. See .env.example.
@@ -34,6 +34,16 @@ services:
       - KEMP1_APIKEY=${KEMP1_APIKEY:-replace-me}
     volumes:
       - ./config.yaml:/etc/kemp_exporter/config.yaml:ro
+    # Mirrors the image's own HEALTHCHECK exactly, timeout included: a 5s image /
+    # 10s compose mismatch shipped across eight sibling repos and had to be
+    # corrected in every one. 127.0.0.1, never localhost -- busybox wget tries ::1
+    # first and this exporter binds IPv4 only.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:9448/livez"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   prometheus:
