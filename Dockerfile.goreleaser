@@ -1,7 +1,7 @@
 # Unpinned by family decision (see ADR 0009): all fifteen of Fred's exporter repos
 # share `alpine:latest`. Uniformity across the family was chosen over
 # reproducibility here; revisiting it is a family-wide decision.
-FROM alpine:latest
+FROM docker.io/library/alpine:latest
 RUN apk add --no-cache ca-certificates && adduser -D -u 10001 kemp
 # TARGETPLATFORM is required: buildx writes each platform's binary into its own
 # subdirectory. A flat `COPY kemp_exporter` only worked with the retired
