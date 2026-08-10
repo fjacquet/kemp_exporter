@@ -2,7 +2,7 @@
 # Patch-pinned, per the project's supply-chain constraint and to match go.mod's
 # `go 1.26.5`: a floating 1.26 tag silently changes the toolchain under a
 # reproducible build.
-FROM golang:1.26.5-bookworm AS builder
+FROM docker.io/library/golang:1.26.5-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # change between two builds of the same commit -- the Go toolchain, the linters
 # and every GitHub Action are pinned per ADR 0001. Uniformity across the family was
 # chosen over reproducibility here; revisiting it is a family-wide decision.
-FROM alpine:latest
+FROM docker.io/library/alpine:latest
 # Copy the CA bundle from the builder rather than `apk add ca-certificates`:
 # apk fetches the index from the Alpine CDN over TLS, which fails behind a corporate
 # MITM proxy because the bare alpine image has no CA bundle yet to validate the proxy
