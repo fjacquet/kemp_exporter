@@ -81,7 +81,11 @@ var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\}`)
 // docker-compose syntax and its meaning: unset OR empty falls back, and the reference
 // never errors. That lets a shipped config.yaml drive a non-secret setting from the
 // environment while still starting on a host that never exported it. Use it only where a
-// safe default exists — a bare ${VAR} keeps the fail-loud behaviour that protects secrets.
+// safe default exists.
+//
+// A bare ${VAR} fails when the variable is UNSET; an exported-but-empty one expands to
+// the empty string, as it always has. Credential fields get the stricter treatment —
+// see interpolateSecret.
 func interpolate(s string) (string, error) {
 	var missing []string
 	out := envRef.ReplaceAllStringFunc(s, func(m string) string {
@@ -101,6 +105,25 @@ func interpolate(s string) (string, error) {
 	})
 	if len(missing) > 0 {
 		return "", fmt.Errorf("unset environment variable(s): %s", strings.Join(missing, ", "))
+	}
+	return out, nil
+}
+
+// interpolateSecret expands like interpolate, but additionally rejects a credential that
+// was written as an env reference yet resolves to nothing. A stray `KEMP1_PASSWORD=` line in
+// a .env file is a plausible typo, and without this the exporter would authenticate with an
+// empty credential and report a failure that names the wrong cause.
+//
+// It fires only when the field actually contains a ${...} reference: a literal value is
+// passed through untouched and an omitted optional credential stays omitted, so it cannot
+// break a config that never referenced the environment in the first place.
+func interpolateSecret(field, s string) (string, error) {
+	out, err := interpolate(s)
+	if err != nil {
+		return "", err
+	}
+	if out == "" && envRef.MatchString(s) {
+		return "", fmt.Errorf("%s references %s, which resolved to an empty value", field, s)
 	}
 	return out, nil
 }
@@ -190,14 +213,22 @@ func Load(path string) (*Config, error) {
 		for _, f := range []struct {
 			label string
 			ptr   *string
+			// strict rejects a field that references an env var resolving to nothing. It is
+			// off for apiKey/password when the matching *File is configured: there the empty
+			// expansion is the documented way to hand over to the file below.
+			strict bool
 		}{
-			{"name", &s.Name},
-			{"host", &s.Host},
-			{"apiKey", &s.APIKey},
-			{"username", &s.Username},
-			{"password", &s.Password},
+			{"name", &s.Name, true},
+			{"host", &s.Host, true},
+			{"apiKey", &s.APIKey, s.APIKeyFile == ""},
+			{"username", &s.Username, true},
+			{"password", &s.Password, s.PasswordFile == ""},
 		} {
-			v, err := interpolate(*f.ptr)
+			expand := interpolate
+			if f.strict {
+				expand = func(v string) (string, error) { return interpolateSecret(f.label, v) }
+			}
+			v, err := expand(*f.ptr)
 			if err != nil {
 				return nil, fmt.Errorf("system %s %s: %w", s.Name, f.label, err)
 			}
