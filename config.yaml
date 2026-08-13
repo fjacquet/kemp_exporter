@@ -30,4 +30,6 @@ systems:
     # insecureSkipVerify disables TLS certificate verification (man-in-the-middle
     # risk). Leave it off in production; enable only for dev against a LoadMaster
     # with a self-signed certificate. Accepts a native boolean or a ${VAR} ref.
-    # insecureSkipVerify: false
+    # The ":-false" fallback keeps startup working when the variable is not exported; a
+    # bare ${KEMP1_SKIP_CERTIFICATE} would abort instead, as bare references do for secrets.
+    insecureSkipVerify: "${KEMP1_SKIP_CERTIFICATE:-false}"
