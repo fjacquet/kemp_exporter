@@ -10,6 +10,31 @@ section rather than letting it accumulate indefinitely.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-03
+
+### Changed
+
+- Go toolchain moved to 1.27.1 (`go.mod`, `Dockerfile`, `Makefile` comment).
+- `golangci-lint` pin bumped v2.12.2 -> v2.13.2 and `goreleaser` v2.16.0 -> v2.18.0.
+
+## [0.4.2] - 2026-10-02
+
+### Security
+
+- `google.golang.org/grpc` bumped to 1.83.2, fixing **GHSA-vp52-pcj8-j9qc** (via 1.83.1)
+  and **GHSA-2v4p-qf9q-27wj**.
+
+### Changed
+
+- Dependency refresh: `go.opentelemetry.io/otel` (with `metric`, `sdk`, `sdk/metric`,
+  `otlpmetricgrpc`) 1.45.0 -> 1.47.0, `github.com/sirupsen/logrus` 1.10.0 -> 1.10.2,
+  `golang.org/x/sync` 0.22.0 -> 0.23.0.
+- Docker base image `golang` 1.26.6 -> 1.27.1.
+- Dependabot auto-merge enabled for this repo, then hardened: the bot-actor guard now
+  reads `github.event.pull_request.user.login` instead of the spoofable `github.actor`.
+
+## [0.4.0] - 2026-08-15
+
 ### Added
 
 - `${VAR:-default}` fallbacks in config env references, ported from `pscale_exporter`.
