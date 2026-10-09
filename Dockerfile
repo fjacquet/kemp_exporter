@@ -1,8 +1,8 @@
 # Build stage
 # Patch-pinned, per the project's supply-chain constraint and to match go.mod's
-# `go 1.27.1`: a floating 1.27 tag silently changes the toolchain under a
+# `go 1.27.2`: a floating 1.27 tag silently changes the toolchain under a
 # reproducible build.
-FROM docker.io/library/golang:1.27.1-bookworm AS builder
+FROM docker.io/library/golang:1.27.2-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
